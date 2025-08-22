@@ -461,7 +461,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     "tried to set a frequency beyond max safe point",
                 ))?
                 .1;
-            println!("{freq} MHz @ {vol} mV");
             pp_file.write_all(format!("vc 0 {freq} {vol}").as_bytes())?;
             pp_file.write_all("c".as_bytes())?;
         }
