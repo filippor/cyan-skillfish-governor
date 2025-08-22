@@ -26,4 +26,5 @@ Keys are:
 * `safe-points`: known safe/stable power points, array of tables with two keys:
   * `frequency`: GPU frequency in MHz
   * `voltage`: GPU supply voltage in mV
+
 See also `default-config.toml`.
