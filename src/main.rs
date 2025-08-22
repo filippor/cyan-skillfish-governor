@@ -91,7 +91,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     {
         Err(s) => {
             println!(
-                "timing.burst_samples {s}, replaced with the default of \
+                "timing.burst-samples {s}, replaced with the default of \
             48"
             );
             Some(48)
@@ -125,7 +125,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .map(|v| v as f32)
         .unwrap_or_else(|s| {
             println!(
-                "timing.ramp_rates.normal {s}, replaced with the default value of \
+                "timing.ramp-rates.normal {s}, replaced with the default value of \
                 1 MHz/ms"
             );
             1.0
@@ -147,14 +147,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .map(|v| v as f32)
         .and_then(|v| {
             (v > ramp_rate || n_burst.is_none()).then_some(v).ok_or(
-                "must, if bursting is active, be greater than timing.ramp_rates.normal \
-                (if you want to turn bursting off, set timing.burst_samples = 0)",
+                "must, if bursting is active, be greater than timing.ramp-rates.normal \
+                (if you want to turn bursting off, set timing.burst-samples = 0)",
             )
         })
         .unwrap_or_else(|s| {
             println!(
-                "timing.ramp_rates.burst {s}, replaced with the default value of \
-                200 * timing.ramp_rates.normal"
+                "timing.ramp-rates.burst {s}, replaced with the default value of \
+                200 * timing.ramp-rates.normal"
             );
             200.0 * ramp_rate
         });
@@ -173,7 +173,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         })
         .unwrap_or_else(|s| {
             println!(
-                "frequency_thresholds.finetune {s}, replaced with the default of \
+                "frequency-thresholds.finetune {s}, replaced with the default of \
                 10 MHz"
             );
             10
@@ -189,8 +189,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         })
         .unwrap_or_else(|s| {
             println!(
-                "frequency_thresholds.adjust {s}, replaced with the default of \
-                10 * frequency_thresholds.finetune"
+                "frequency-thresholds.adjust {s}, replaced with the default of \
+                10 * frequency-thresholds.finetune"
             );
             10 * small_change
         });
@@ -214,7 +214,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .map(|v| v as f32)
         .unwrap_or_else(|s| {
             println!(
-                "load_target.upper {s}, replaced with the default value of \
+                "load-target.upper {s}, replaced with the default value of \
                 0.95"
             );
             0.95
@@ -237,8 +237,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .map(|v| v as f32)
         .unwrap_or_else(|s| {
             println!(
-                "load_target.lower {s}, replaced with the default value of \
-                load_target.upper - 0.15"
+                "load-target.lower {s}, replaced with the default value of \
+                load-target.upper - 0.15"
             );
             (up_thresh - 0.15).max(0.0)
         });
