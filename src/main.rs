@@ -83,7 +83,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         });
 
     // samples
-    let n_burst = match timing
+    let burst_mask = match timing
         .and_then(|t| t.get("burst-samples"))
         .ok_or("is missing")
         .and_then(|v| v.as_integer().ok_or("must be an integer"))
@@ -97,7 +97,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             Some(48)
         }
         Ok(0) => None,
-        Ok(v @ 1..=64) => Some(u32::try_from(v).unwrap()),
+        Ok(v @ 1..64) => Some(!(u64::MAX << v)),
+        Ok(64) => Some(u64::MAX),
         Ok(65..) => {
             println!("timing.burst-samples can be at most 64, clamping");
             Some(64)
@@ -146,7 +147,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         })
         .map(|v| v as f32)
         .and_then(|v| {
-            (v > ramp_rate || n_burst.is_none()).then_some(v).ok_or(
+            (v > ramp_rate || burst_mask.is_none()).then_some(v).ok_or(
                 "must, if bursting is active, be greater than timing.ramp-rates.normal \
                 (if you want to turn bursting off, set timing.burst-samples = 0)",
             )
@@ -418,8 +419,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             // Rough adjustment for expected effect on workload.
             // The slight increase in accuracy allows for less frequent adjustments.
             let busy_frac = busy_frac * (f32::from(curr_freq) / target_freq);
-            let burst = n_burst
-                .map(|n| (samples & !(u64::MAX.unbounded_shl(n))).count_ones() >= n)
+            let burst = burst_mask
+                .map(|mask| samples & mask == mask)
                 .unwrap_or(false);
             if burst {
                 target_freq += ramp_rate_burst * f32::from(sampling_interval) / 1000.0;
