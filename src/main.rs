@@ -31,12 +31,44 @@ struct Config {
     max_freq : u16,  
 }
 
-struct GPU{
-    info : libdrm_amdgpu_sys::AMDGPU::drm_amdgpu_info_device,
-    dev_handle : DeviceHandle,
-    pp_file : File,
+struct GPU {
+    // Other fields
+    reader: GPUReader,
+    writer: GPUWriter,
 }
 
+struct GPUReader {
+    dev_handle: DeviceHandle,
+    samples: u64,
+    info: libdrm_amdgpu_sys::AMDGPU::drm_amdgpu_info_device,
+}
+
+struct GPUWriter {
+    pp_file: File,
+}
+
+
+
+impl GPUReader{
+    pub fn update_samples(&mut self)->Result<(), IoError>{
+        let res = self.dev_handle
+            .read_mm_registers(GRBM_STATUS_REG)
+            .map_err(IoError::from_raw_os_error)?;
+        let gui_busy = (res & (1 << GPU_ACTIVE_BIT)) > 0;
+        self.samples <<= 1;
+        if gui_busy {
+            self.samples |= 1;
+        }
+        Ok(())        
+    }
+}
+impl GPUWriter {
+     pub fn change_freq_vol(&mut self, freq : u16, vol :u16)->Result<(), IoError>{
+        self.pp_file.write_all(format!("vc 0 {freq} {vol}").as_bytes())?;
+        self.pp_file.write_all("c".as_bytes())?;
+        Ok(())  
+     }
+}
 
 
 
@@ -46,32 +78,28 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .nth(1)
         .map(std::fs::read_to_string)
         .unwrap_or(Ok("".to_string()));
-    let config : Config = parse_config(path, &gpu)?;
+    let config : Config = parse_config(path, &gpu.reader)?;
     
     let (send, mut recv) = watch::channel(config.min_freq);
+    
     let jh_gov: JoinHandle<Result<(), IoError>> = std::thread::spawn(move || {
         let mut curr_freq = config.min_freq;
         let mut target_freq = f32::from(config.min_freq);
-        let mut samples: u64 = 0;
         let mut last_adjustment = Instant::now();
         let mut last_finetune = Instant::now();
+        
         loop {
-            let res = gpu.dev_handle
-                .read_mm_registers(GRBM_STATUS_REG)
-                .map_err(IoError::from_raw_os_error)?;
-            let gui_busy = (res & (1 << GPU_ACTIVE_BIT)) > 0;
-            samples <<= 1;
-            if gui_busy {
-                samples |= 1;
-            }
-
-            let busy_frac = (samples.count_ones() as f32) / 64.0;
+            
+            gpu.reader.update_samples()?;
+            let busy_frac = (gpu.reader.samples.count_ones() as f32) / 64.0;
+           
             // Rough adjustment for expected effect on workload.
             // The slight increase in accuracy allows for less frequent adjustments.
             let busy_frac = busy_frac * (f32::from(curr_freq) / target_freq);
             let burst = config.burst_mask
-                .map(|mask| samples & mask == mask)
+                .map(|mask| gpu.reader.samples & mask == mask)
                 .unwrap_or(false);
+   
             if burst {
                 target_freq += config.ramp_rate_burst * f32::from(config.sampling_interval) / 1000.0;
             } else if busy_frac > config.up_thresh {
@@ -112,8 +140,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     "tried to set a frequency beyond max safe point",
                 ))?
                 .1;
-            gpu.pp_file.write_all(format!("vc 0 {freq} {vol}").as_bytes())?;
-            gpu.pp_file.write_all("c".as_bytes())?;
+           
+            gpu.writer.change_freq_vol(freq,vol)?;
+           
         }
     });
 
@@ -153,13 +182,12 @@ fn get_gpu() -> Result<GPU, IoError>{
     )?;
 
     Ok(GPU { 
-        info: info, 
-        dev_handle: dev_handle, 
-        pp_file:pp_file,
+        reader : GPUReader { dev_handle: dev_handle, samples: 0, info : info},
+        writer: GPUWriter { pp_file: pp_file }
     })
 }
 
-fn parse_config(path : Result<String,std::io::Error>, gpu:&GPU) -> Result<Config,Box<dyn std::error::Error>>{
+fn parse_config(path : Result<String,std::io::Error>, gpu_reader:&GPUReader) -> Result<Config,Box<dyn std::error::Error>>{
     let config = path?.parse::<Table>()?;
 
     let timing = config.get("timing").and_then(|t| t.as_table());
@@ -496,8 +524,8 @@ fn parse_config(path : Result<String,std::io::Error>, gpu:&GPU) -> Result<Config
         BTreeMap::from([(350, 700), (2000, 1000)])
     };
     // given in kHz, we need MHz
-    let min_engine_clock = gpu.info.min_engine_clock / 1000;
-    let max_engine_clock = gpu.info.max_engine_clock / 1000;
+    let min_engine_clock = gpu_reader.info.min_engine_clock / 1000;
+    let max_engine_clock = gpu_reader.info.max_engine_clock / 1000;
     let mut min_freq = *safe_points.first_key_value().unwrap().0;
     if u64::from(min_freq) < min_engine_clock {
         eprintln!("GPU minimum frequency higher than lowest safe frequency, clamping");
