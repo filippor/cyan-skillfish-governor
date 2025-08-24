@@ -15,12 +15,145 @@ const GRBM_STATUS_REG: u32 = 0x2004;
 // cyan_skillfish.gfx1013.mmGRBM_STATUS.GUI_ACTIVE
 const GPU_ACTIVE_BIT: u8 = 31;
 
+struct Config {
+    safe_points: BTreeMap<u16, u16>,
+    sampling_interval: u16,
+    adjustment_interval: u64,
+    finetune_interval: u64,
+    ramp_rate: f32,
+    ramp_rate_burst: f32,
+    burst_mask: Option<u64>,
+    significant_change: u16,
+    small_change: u16,
+    up_thresh : f32,
+    down_thresh : f32,  
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let config = std::env::args()
+    
+    let config : Config = parse_config(std::env::args()
         .nth(1)
         .map(std::fs::read_to_string)
-        .unwrap_or(Ok("".to_string()))?
-        .parse::<Table>()?;
+        .unwrap_or(Ok("".to_string())))?;
+
+    let location = BUS_INFO {
+        domain: 0,
+        bus: 1,
+        dev: 0,
+        func: 0,
+    };
+    let sysfs_path = location.get_sysfs_path();
+    let vendor = std::fs::read_to_string(sysfs_path.join("vendor"))?;
+    let device = std::fs::read_to_string(sysfs_path.join("device"))?;
+    if !((vendor == "0x1002\n") && (device == "0x13fe\n")) {
+        Err(IoError::other(
+            "Cyan Skillfish GPU not found at expected PCI bus location",
+        ))?;
+    }
+    let card = File::open(location.get_drm_render_path()?)?;
+    let (dev_handle, _, _) =
+        DeviceHandle::init(card.as_raw_fd()).map_err(IoError::from_raw_os_error)?;
+
+    let info = dev_handle
+        .device_info()
+        .map_err(IoError::from_raw_os_error)?;
+    // given in kHz, we need MHz
+    let min_engine_clock = info.min_engine_clock / 1000;
+    let max_engine_clock = info.max_engine_clock / 1000;
+    let mut min_freq = *config.safe_points.first_key_value().unwrap().0;
+    if u64::from(min_freq) < min_engine_clock {
+        eprintln!("GPU minimum frequency higher than lowest safe frequency, clamping");
+        min_freq = u16::try_from(min_engine_clock)?;
+    }
+    let mut max_freq = *config.safe_points.last_key_value().unwrap().0;
+    if u64::from(max_freq) > max_engine_clock {
+        eprintln!("GPU maximum frequency lower than highest safe frequency, clamping");
+        max_freq = u16::try_from(max_engine_clock)?;
+    }
+    let (min_freq, max_freq) = (min_freq, max_freq);
+
+    let mut pp_file = std::fs::OpenOptions::new().write(true).open(
+        dev_handle
+            .get_sysfs_path()
+            .map_err(IoError::from_raw_os_error)?
+            .join("pp_od_clk_voltage"),
+    )?;
+    let (send, mut recv) = watch::channel(min_freq);
+    let jh_gov: JoinHandle<Result<(), IoError>> = std::thread::spawn(move || {
+        let mut curr_freq = min_freq;
+        let mut target_freq = f32::from(min_freq);
+        let mut samples: u64 = 0;
+        let mut last_adjustment = Instant::now();
+        let mut last_finetune = Instant::now();
+        loop {
+            let res = dev_handle
+                .read_mm_registers(GRBM_STATUS_REG)
+                .map_err(IoError::from_raw_os_error)?;
+            let gui_busy = (res & (1 << GPU_ACTIVE_BIT)) > 0;
+            samples <<= 1;
+            if gui_busy {
+                samples |= 1;
+            }
+
+            let busy_frac = (samples.count_ones() as f32) / 64.0;
+            // Rough adjustment for expected effect on workload.
+            // The slight increase in accuracy allows for less frequent adjustments.
+            let busy_frac = busy_frac * (f32::from(curr_freq) / target_freq);
+            let burst = config.burst_mask
+                .map(|mask| samples & mask == mask)
+                .unwrap_or(false);
+            if burst {
+                target_freq += config.ramp_rate_burst * f32::from(config.sampling_interval) / 1000.0;
+            } else if busy_frac > config.up_thresh {
+                target_freq += config.ramp_rate * f32::from(config.sampling_interval) / 1000.0;
+            } else if busy_frac < config.down_thresh {
+                target_freq -= config.ramp_rate * f32::from(config.sampling_interval) / 1000.0;
+            }
+            target_freq = target_freq.clamp(f32::from(min_freq), f32::from(max_freq));
+
+            let adj_now = last_adjustment.elapsed() >= Duration::from_micros(config.adjustment_interval);
+            if adj_now || burst {
+                let target_freq = target_freq as u16;
+                let hit_bounds = target_freq != curr_freq
+                    && (target_freq == min_freq || target_freq == max_freq);
+                let big_change = curr_freq.abs_diff(target_freq) >= config.significant_change;
+                let finetune = (last_finetune.elapsed()
+                    >= Duration::from_micros(config.finetune_interval))
+                    && curr_freq.abs_diff(target_freq) >= config.small_change;
+                let burst_up = burst && curr_freq != target_freq;
+                if hit_bounds || big_change || finetune || burst_up {
+                    send.send(target_freq);
+                    curr_freq = target_freq;
+                    last_finetune = Instant::now();
+                }
+                last_adjustment = Instant::now();
+            }
+
+            std::thread::sleep(Duration::from_micros(u64::from(config.sampling_interval)));
+        }
+    });
+    let jh_set: JoinHandle<Result<(), IoError>> = std::thread::spawn(move || {
+        loop {
+            let freq = recv.wait();
+            let vol = *config.safe_points
+                .range(freq..)
+                .next()
+                .ok_or(IoError::other(
+                    "tried to set a frequency beyond max safe point",
+                ))?
+                .1;
+            pp_file.write_all(format!("vc 0 {freq} {vol}").as_bytes())?;
+            pp_file.write_all("c".as_bytes())?;
+        }
+    });
+
+    let () = jh_set.join().unwrap()?;
+    let () = jh_gov.join().unwrap()?;
+    Ok(())
+}
+
+fn parse_config(path : Result<String,std::io::Error>) -> Result<Config,Box<dyn std::error::Error>>{
+    let config = path?.parse::<Table>()?;
 
     let timing = config.get("timing").and_then(|t| t.as_table());
     let intervals = timing
@@ -355,119 +488,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         );
         BTreeMap::from([(350, 700), (2000, 1000)])
     };
-
-    let location = BUS_INFO {
-        domain: 0,
-        bus: 1,
-        dev: 0,
-        func: 0,
-    };
-    let sysfs_path = location.get_sysfs_path();
-    let vendor = std::fs::read_to_string(sysfs_path.join("vendor"))?;
-    let device = std::fs::read_to_string(sysfs_path.join("device"))?;
-    if !((vendor == "0x1002\n") && (device == "0x13fe\n")) {
-        Err(IoError::other(
-            "Cyan Skillfish GPU not found at expected PCI bus location",
-        ))?;
-    }
-    let card = File::open(location.get_drm_render_path()?)?;
-    let (dev_handle, _, _) =
-        DeviceHandle::init(card.as_raw_fd()).map_err(IoError::from_raw_os_error)?;
-
-    let info = dev_handle
-        .device_info()
-        .map_err(IoError::from_raw_os_error)?;
-    // given in kHz, we need MHz
-    let min_engine_clock = info.min_engine_clock / 1000;
-    let max_engine_clock = info.max_engine_clock / 1000;
-    let mut min_freq = *safe_points.first_key_value().unwrap().0;
-    if u64::from(min_freq) < min_engine_clock {
-        eprintln!("GPU minimum frequency higher than lowest safe frequency, clamping");
-        min_freq = u16::try_from(min_engine_clock)?;
-    }
-    let mut max_freq = *safe_points.last_key_value().unwrap().0;
-    if u64::from(max_freq) > max_engine_clock {
-        eprintln!("GPU maximum frequency lower than highest safe frequency, clamping");
-        max_freq = u16::try_from(max_engine_clock)?;
-    }
-    let (min_freq, max_freq) = (min_freq, max_freq);
-
-    let mut pp_file = std::fs::OpenOptions::new().write(true).open(
-        dev_handle
-            .get_sysfs_path()
-            .map_err(IoError::from_raw_os_error)?
-            .join("pp_od_clk_voltage"),
-    )?;
-    let (send, mut recv) = watch::channel(min_freq);
-    let jh_gov: JoinHandle<Result<(), IoError>> = std::thread::spawn(move || {
-        let mut curr_freq = min_freq;
-        let mut target_freq = f32::from(min_freq);
-        let mut samples: u64 = 0;
-        let mut last_adjustment = Instant::now();
-        let mut last_finetune = Instant::now();
-        loop {
-            let res = dev_handle
-                .read_mm_registers(GRBM_STATUS_REG)
-                .map_err(IoError::from_raw_os_error)?;
-            let gui_busy = (res & (1 << GPU_ACTIVE_BIT)) > 0;
-            samples <<= 1;
-            if gui_busy {
-                samples |= 1;
-            }
-
-            let busy_frac = (samples.count_ones() as f32) / 64.0;
-            // Rough adjustment for expected effect on workload.
-            // The slight increase in accuracy allows for less frequent adjustments.
-            let busy_frac = busy_frac * (f32::from(curr_freq) / target_freq);
-            let burst = burst_mask
-                .map(|mask| samples & mask == mask)
-                .unwrap_or(false);
-            if burst {
-                target_freq += ramp_rate_burst * f32::from(sampling_interval) / 1000.0;
-            } else if busy_frac > up_thresh {
-                target_freq += ramp_rate * f32::from(sampling_interval) / 1000.0;
-            } else if busy_frac < down_thresh {
-                target_freq -= ramp_rate * f32::from(sampling_interval) / 1000.0;
-            }
-            target_freq = target_freq.clamp(f32::from(min_freq), f32::from(max_freq));
-
-            let adj_now = last_adjustment.elapsed() >= Duration::from_micros(adjustment_interval);
-            if adj_now || burst {
-                let target_freq = target_freq as u16;
-                let hit_bounds = target_freq != curr_freq
-                    && (target_freq == min_freq || target_freq == max_freq);
-                let big_change = curr_freq.abs_diff(target_freq) >= significant_change;
-                let finetune = (last_finetune.elapsed()
-                    >= Duration::from_micros(finetune_interval))
-                    && curr_freq.abs_diff(target_freq) >= small_change;
-                let burst_up = burst && curr_freq != target_freq;
-                if hit_bounds || big_change || finetune || burst_up {
-                    send.send(target_freq);
-                    curr_freq = target_freq;
-                    last_finetune = Instant::now();
-                }
-                last_adjustment = Instant::now();
-            }
-
-            std::thread::sleep(Duration::from_micros(u64::from(sampling_interval)));
-        }
-    });
-    let jh_set: JoinHandle<Result<(), IoError>> = std::thread::spawn(move || {
-        loop {
-            let freq = recv.wait();
-            let vol = *safe_points
-                .range(freq..)
-                .next()
-                .ok_or(IoError::other(
-                    "tried to set a frequency beyond max safe point",
-                ))?
-                .1;
-            pp_file.write_all(format!("vc 0 {freq} {vol}").as_bytes())?;
-            pp_file.write_all("c".as_bytes())?;
-        }
-    });
-
-    let () = jh_set.join().unwrap()?;
-    let () = jh_gov.join().unwrap()?;
-    Ok(())
+     Ok(Config { 
+            sampling_interval: sampling_interval, 
+            ramp_rate: ramp_rate, 
+            small_change: small_change, 
+            safe_points: safe_points, 
+            burst_mask: burst_mask,
+            ramp_rate_burst : ramp_rate_burst,
+            up_thresh : up_thresh,
+            down_thresh : down_thresh,
+            adjustment_interval : adjustment_interval,
+            significant_change : significant_change,
+            finetune_interval : finetune_interval,
+        })
 }
