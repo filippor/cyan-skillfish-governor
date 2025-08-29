@@ -19,14 +19,55 @@ adjust = 100
 finetune = 10
 
 [load-target]
-upper = 0.95
-lower = 0.7
+upper = 0.70
+lower = 0.45
+
+
+[temperature]
+throttling = 85
+throttling_recovery = 75
 
 [[safe-points]]
-frequency = 350 # MHz
-voltage = 700 # mV
+frequency = 350
+voltage = 700
+
+[[safe-points]]
+frequency = 1175
+voltage = 700
+
+[[safe-points]]
+frequency = 1400
+voltage = 750
+
+[[safe-points]]
+frequency = 1600
+voltage = 800
+
+[[safe-points]]
+frequency = 1700
+voltage = 850
+
+[[safe-points]]
+frequency = 1850
+voltage = 900
 
 [[safe-points]]
 frequency = 2000
+voltage = 950
+
+[[safe-points]]
+frequency = 2050
+voltage = 975
+
+[[safe-points]]
+frequency = 2100
 voltage = 1000
 
+
+[[safe-points]]
+frequency = 2175
+voltage = 1025
+
+[[safe-points]]
+frequency = 2230
+voltage = 1050
