@@ -8,4 +8,4 @@ edition = "2024"
 libdrm_amdgpu_sys = "0.8.8"
 toml = "0.9.5"
 watch = "0.2.3"
-ta = "0.5.0"
+

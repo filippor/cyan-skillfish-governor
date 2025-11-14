@@ -9,8 +9,7 @@ use std::{
 
 use libdrm_amdgpu_sys::{AMDGPU::DeviceHandle, PCI::BUS_INFO};
 use toml::Table;
-use ta::indicators::ExponentialMovingAverage;
-use ta::Next;
+
 
 // cyan_skillfish.gfx1013.mmGRBM_STATUS
 const GRBM_STATUS_REG: u32 = 0x2004;
@@ -43,7 +42,6 @@ struct GPUReader {
     samples: u64,
     min_freq : u16,
     max_freq : u16,
-    thermal_sensor_ema: ExponentialMovingAverage,
 }
 
 struct GPUWriter {
@@ -60,7 +58,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     
     let temp_check_period = config.adjustment_interval * 10;
-    let mut gpu = GPU::new(safe_points,(temp_check_period.as_micros() / config.adjustment_interval.as_micros()) as usize)?;
+    let mut gpu = GPU::new(safe_points)?;
     
     let (send, mut recv) = watch::channel(gpu.reader.min_freq);
     
@@ -161,8 +159,7 @@ impl GPUReader{
          let temp = self.dev_handle
             .sensor_info(libdrm_amdgpu_sys::AMDGPU::SENSOR_INFO::SENSOR_TYPE::GPU_TEMP)
             .map_err(IoError::from_raw_os_error)?;
-        let temp_c = (temp/1000) as f64;
-        Ok(self.thermal_sensor_ema.next(temp_c).round() as u32)
+        Ok((temp/1000) as u32)
        
     }
 }
@@ -595,7 +592,7 @@ fn parse_config(path : Result<String,std::io::Error>) -> Result<(Config, BTreeMa
 } 
 
 impl GPU{
-    fn new (safe_points: BTreeMap<u16, u16>,temp_smoothing_period: usize) -> Result<GPU, Box<dyn std::error::Error>>{
+    fn new (safe_points: BTreeMap<u16, u16>) -> Result<GPU, Box<dyn std::error::Error>>{
         
         let location = BUS_INFO {
             domain: 0,
@@ -645,7 +642,6 @@ impl GPU{
                 samples: 0, 
                 min_freq:min_freq,
                 max_freq:max_freq,
-                thermal_sensor_ema:  ExponentialMovingAverage::new(temp_smoothing_period)?,
             },
             writer: GPUWriter { 
                 pp_file: pp_file,
