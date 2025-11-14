@@ -72,7 +72,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let mut last_temp_check = Instant::now();
         
 
-        let burst_freq_step = (config.ramp_rate_burst * config.adjustment_interval.as_millis() as f32).clamp(1.0, (gpu.reader.max_freq - gpu.reader.min_freq).into()) as u16;
+        let burst_freq_step = (config.ramp_rate_burst * config.sampling_interval.as_millis() as f32).clamp(1.0, (gpu.reader.max_freq - gpu.reader.min_freq).into()) as u16;
         let freq_step = (config.ramp_rate * config.sampling_interval.as_millis() as f32) as u16;
 
         loop {

@@ -1,13 +1,13 @@
 # us
 [timing.intervals]
 sample = 2000
-adjust = 20_000
-finetune = 1_000_000_000
+adjust = 500_000
+finetune = 1_000_000
 
 # MHz/ms
 [timing.ramp-rates]
-normal = 1
-burst = 200
+normal = 50
+burst = 100
 
 # number of samples
 [timing]
@@ -29,6 +29,10 @@ throttling_recovery = 75
 
 [[safe-points]]
 frequency = 350
+voltage = 700
+
+[[safe-points]]
+frequency = 500
 voltage = 700
 
 [[safe-points]]
@@ -63,11 +67,18 @@ voltage = 975
 frequency = 2100
 voltage = 1000
 
+[[safe-points]]
+frequency = 2125
+voltage = 1015
 
 [[safe-points]]
-frequency = 2175
+frequency = 2150
 voltage = 1025
 
 [[safe-points]]
+frequency = 2200
+voltage = 1045
+
+[[safe-points]]
 frequency = 2230
-voltage = 1050
+voltage = 1055
