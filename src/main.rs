@@ -57,13 +57,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .nth(1)
         .map(std::fs::read_to_string)
         .unwrap_or(Ok("".to_string())))?;
-    let temp_check_period = Duration::from_micros(500_000);
+
+    
+    let temp_check_period = config.adjustment_interval * 10;
     let mut gpu = GPU::new(safe_points,(temp_check_period.as_micros() / config.adjustment_interval.as_micros()) as usize)?;
     
     let (send, mut recv) = watch::channel(gpu.reader.min_freq);
     
     let jh_gov: JoinHandle<Result<(), IoError>> = std::thread::spawn(move || {
-        
         let mut curr_freq: u16 = gpu.reader.min_freq;
         let mut target_freq = gpu.reader.min_freq;
         let mut max_freq = gpu.reader.max_freq;
@@ -73,12 +74,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let mut last_temp_check = Instant::now();
         
 
-        let burst_freq_step = (config.ramp_rate_burst * config.adjustment_interval.as_millis() as f32) as u16;
-        let freq_step = (config.ramp_rate * config.adjustment_interval.as_millis() as f32) as u16;
+        let burst_freq_step = (config.ramp_rate_burst * config.adjustment_interval.as_millis() as f32).clamp(1.0, (gpu.reader.max_freq - gpu.reader.min_freq).into()) as u16;
+        let freq_step = (config.ramp_rate * config.sampling_interval.as_millis() as f32) as u16;
 
         loop {
             let (average_load, burst_length) = gpu.reader.poll_and_get_load()?;        
-               
+
             let burst = config.burst_samples
                 .map_or(false, |burst_samples| burst_length >= burst_samples);
             
@@ -99,6 +100,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 
 
                 if burst {
+
                     target_freq += burst_freq_step;
                 } else if average_load > config.up_thresh {
                     target_freq += freq_step;
@@ -123,9 +125,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     last_finetune = Instant::now();
                 }
                 last_adjustment = Instant::now();
-            }
-
-            std::thread::sleep(config.sampling_interval);
+            }            
+            std::thread::sleep(config.sampling_interval);          
         }
     });
     let jh_set: JoinHandle<Result<(), IoError>> = std::thread::spawn(move || {
@@ -204,7 +205,7 @@ fn parse_config(path : Result<String,std::io::Error>) -> Result<(Config, BTreeMa
         });
     // us
     let adjustment_interval = intervals
-        .and_then(|t| t.get("sample"))
+        .and_then(|t| t.get("adjust"))
         .ok_or("is missing")
         .and_then(|v| v.as_integer().ok_or("must be an integer"))
         .and_then(|v| v.is_positive().then_some(v).ok_or("must be positive"))
@@ -225,7 +226,7 @@ fn parse_config(path : Result<String,std::io::Error>) -> Result<(Config, BTreeMa
         });
     // us
     let finetune_interval = intervals
-        .and_then(|t| t.get("sample"))
+        .and_then(|t| t.get("finetune"))
         .ok_or("is missing")
         .and_then(|v| v.as_integer().ok_or("must be an integer"))
         .and_then(|v| v.is_positive().then_some(v).ok_or("must be positive"))
@@ -573,7 +574,7 @@ fn parse_config(path : Result<String,std::io::Error>) -> Result<(Config, BTreeMa
         None
     };
     
-
+  
     Ok((
          Config { 
             sampling_interval: Duration::from_micros(u64::from(sampling_interval)), 
@@ -595,6 +596,7 @@ fn parse_config(path : Result<String,std::io::Error>) -> Result<(Config, BTreeMa
 
 impl GPU{
     fn new (safe_points: BTreeMap<u16, u16>,temp_smoothing_period: usize) -> Result<GPU, Box<dyn std::error::Error>>{
+        
         let location = BUS_INFO {
             domain: 0,
             bus: 1,
@@ -636,15 +638,14 @@ impl GPU{
             eprintln!("GPU maximum frequency lower than highest safe frequency, clamping");
             max_freq = u16::try_from(max_engine_clock)?;
         }
-        let (min_freq, max_freq) = (min_freq, max_freq);
-
+        
         Ok(GPU { 
             reader : GPUReader { 
                 dev_handle: dev_handle, 
                 samples: 0, 
                 min_freq:min_freq,
                 max_freq:max_freq,
-                thermal_sensor_ema: ExponentialMovingAverage::new(temp_smoothing_period)?,
+                thermal_sensor_ema:  ExponentialMovingAverage::new(temp_smoothing_period)?,
             },
             writer: GPUWriter { 
                 pp_file: pp_file,
