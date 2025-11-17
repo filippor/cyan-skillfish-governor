@@ -60,6 +60,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     
         let mut curr_freq: u16 = gpu.reader.min_freq;
         let mut target_freq = gpu.reader.min_freq;
+        gpu.writer.change_freq(target_freq)?;
         let mut max_freq = gpu.reader.max_freq;
 
         let mut last_finetune = Instant::now();
