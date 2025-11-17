@@ -3,7 +3,6 @@ use std::{
     fs::File,
     io::{Error as IoError, ErrorKind, Write},
     os::fd::AsRawFd,
-    thread::JoinHandle,
     time::{Duration, Instant},
 };
 
@@ -58,9 +57,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut gpu = GPU::new(safe_points)?;
 
-    let (send, mut recv) = watch::channel(gpu.reader.min_freq);
-
-    let jh_gov: JoinHandle<Result<(), IoError>> = std::thread::spawn(move || {
+    
         let mut curr_freq: u16 = gpu.reader.min_freq;
         let mut target_freq = gpu.reader.min_freq;
         let mut max_freq = gpu.reader.max_freq;
@@ -78,6 +75,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 (average_load, burst_length) = gpu.reader.poll_and_get_load()?;
                 std::thread::sleep(config.sampling_interval);
             }
+            //println!("load {average_load} bl {burst_length}");
             let burst = config
                 .burst_samples
                 .map_or(false, |burst_samples| burst_length >= burst_samples);
@@ -112,23 +110,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 && curr_freq.abs_diff(target_freq) >= config.small_change;
 
             if curr_freq != target_freq && (burst || hit_bounds || big_change || finetune) {
-                send.send(target_freq);
+                gpu.writer.change_freq(target_freq)?;
                 curr_freq = target_freq;
                 last_finetune = Instant::now();
             }
 
             std::thread::sleep(config.adjustment_interval);
         }
-    });
-    let jh_set: JoinHandle<Result<(), IoError>> = std::thread::spawn(move || {
-        loop {
-            gpu.writer.change_freq(recv.wait())?;
-        }
-    });
 
-    let () = jh_set.join().unwrap()?;
-    let () = jh_gov.join().unwrap()?;
-    Ok(())
 }
 
 impl GPUReader {
