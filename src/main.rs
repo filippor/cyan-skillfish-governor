@@ -91,8 +91,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     {
         Err(s) => {
             println!(
-                "timing.burst-samples {s}, replaced with the default of \
-            48"
+                "timing.burst-samples {s}, replaced with the default of 48"
             );
             Some(48)
         }
