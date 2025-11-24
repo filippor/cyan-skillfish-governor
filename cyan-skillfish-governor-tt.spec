@@ -4,7 +4,7 @@
 # prevent library files from being installed
 %global cargo_install_lib 0
 
-Name:           cyan-skillfish-governor
+Name:           cyan-skillfish-governor-tt
 Version:        v0.1.3
 Release:        1.20250824121733165179.package.fedora.1.g07d7fe2%{?dist}
 Summary:        # FIXME
@@ -14,7 +14,7 @@ SourceLicense:  MIT
 License:        MIT
 # LICENSE.dependencies contains a full license breakdown
 
-URL:            https://github.com/Magnap/cyan-skillfish-governor
+URL:            https://github.com/filippor/cyan-skillfish-governor
 Source:         cyan-skillfish-governor-v0.1.3.tar.gz
 
 BuildRequires:  cargo-rpm-macros >= 26 libdrm-devel

@@ -1,28 +1,27 @@
 # us
 [timing.intervals]
-sample = 1000
+sample = 500
 adjust = 200_000
-finetune = 1_000_000
 
 # MHz/ms
 [timing.ramp-rates]
-normal = 50
-burst = 100
+normal = 1
+burst = 50
 
 # number of samples
 [timing]
-burst-samples = 48
+burst-samples = 60
 
 # MHz
 [frequency-thresholds]
-adjust = 100
-finetune = 10
+adjust = 10
 
+# %
 [load-target]
-upper = 0.70
-lower = 0.45
+upper = 0.80
+lower = 0.65
 
-
+#°C
 [temperature]
 throttling = 85
 throttling_recovery = 75

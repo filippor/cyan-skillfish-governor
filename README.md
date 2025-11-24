@@ -10,7 +10,6 @@ Keys are:
     * `sample`: how often to sample GPU load
       (it's a single bit, so needs to be sampled more often than you'd think)
     * `adjust`: how often to consider adjusting the frequency
-    * `finetune` how long since the last adjustment to consider making a fine-tuning adjustment
   * `burst-samples`: while the GPU has been busy for this many samples in a row,
     enter "burst mode", increasing the frequency at the `timing.ramp_rates.burst` rate.
     Set to 0 to disable burst mode.
@@ -23,6 +22,9 @@ Keys are:
 * `load-target`: as a fraction
   * `upper`: GPU load above which target frequency is increased
   * `lower`: GPU load below which target frequency is decreased
+* `temmperature` in °C
+  * `throttling` if temperature is greather  start reducing max frequency
+  * `throttling_recovery` if temperaure is lower restore max frequncy
 * `safe-points`: known safe/stable power points, array of tables with two keys:
   * `frequency`: GPU frequency in MHz
   * `voltage`: GPU supply voltage in mV

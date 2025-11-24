@@ -3,7 +3,7 @@ use std::{
     fs::File,
     io::{Error as IoError, ErrorKind, Write},
     os::fd::AsRawFd,
-    time::{Duration, Instant},
+    time::{Duration},
 };
 
 use libdrm_amdgpu_sys::{AMDGPU::DeviceHandle, PCI::BUS_INFO};
@@ -17,12 +17,10 @@ const GPU_ACTIVE_BIT: u8 = 31;
 struct Config {
     sampling_interval: Duration,
     adjustment_interval: Duration,
-    finetune_interval: Duration,
     ramp_rate: f32,
     ramp_rate_burst: f32,
     burst_samples: Option<u32>,
     significant_change: u16,
-    small_change: u16,
     up_thresh: f32,
     down_thresh: f32,
     throttling_temp: Option<u32>,
@@ -58,66 +56,63 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut gpu = GPU::new(safe_points)?;
 
     
-        let mut curr_freq: u16 = gpu.reader.min_freq;
-        let mut target_freq = gpu.reader.min_freq;
-        gpu.writer.change_freq(target_freq)?;
-        let mut max_freq = gpu.reader.max_freq;
+    let mut curr_freq: u16 = gpu.reader.min_freq;
+    let mut target_freq = gpu.reader.min_freq;
+    gpu.writer.change_freq(target_freq)?;
+    let mut max_freq = gpu.reader.max_freq;
 
-        let mut last_finetune = Instant::now();
+    let burst_freq_step =
+        (config.ramp_rate_burst * config.adjustment_interval.as_millis() as f32) as u16;
+    let freq_step = (config.ramp_rate * config.adjustment_interval.as_millis() as f32) as u16;
 
-        let burst_freq_step =
-            (config.ramp_rate_burst * config.sampling_interval.as_millis() as f32) as u16;
-        let freq_step = (config.ramp_rate * config.sampling_interval.as_millis() as f32) as u16;
-
-        loop {
-            let mut average_load: f32 = 0.0;
-            let mut burst_length: u32 = 0;
-            for _ in 0..65 {
-                (average_load, burst_length) = gpu.reader.poll_and_get_load()?;
-                std::thread::sleep(config.sampling_interval);
-            }
-            //println!("load {average_load} bl {burst_length}");
-            let burst = config
-                .burst_samples
-                .map_or(false, |burst_samples| burst_length >= burst_samples);
-
-            //Temperature Management
-            let temp = gpu.reader.read_temperature()?;
-            if let Some(max_temp) = config.throttling_temp {
-                if (temp > max_temp) && (max_freq >= gpu.reader.min_freq + freq_step) {
-                    max_freq -= freq_step;
-                    println!("throttling temp {temp} freq {max_freq}");
-                } else if let Some(recovery_temp) = config.throttling_recovery_temp
-                    && temp < recovery_temp
-                    && max_freq != gpu.reader.max_freq
-                {
-                    max_freq = gpu.reader.max_freq;
-                    println!("recover throttling temp {temp} freq {max_freq}");
-                }
-            }
-
-            if burst {
-                target_freq += burst_freq_step;
-            } else if average_load > config.up_thresh {
-                target_freq += freq_step;
-            } else if average_load < config.down_thresh {
-                target_freq -= freq_step;
-            }
-            target_freq = target_freq.clamp(gpu.reader.min_freq, max_freq);
-
-            let hit_bounds = target_freq == gpu.reader.min_freq || target_freq == max_freq;
-            let big_change = curr_freq.abs_diff(target_freq) >= config.significant_change;
-            let finetune = (last_finetune.elapsed() >= config.finetune_interval)
-                && curr_freq.abs_diff(target_freq) >= config.small_change;
-
-            if curr_freq != target_freq && (burst || hit_bounds || big_change || finetune) {
-                gpu.writer.change_freq(target_freq)?;
-                curr_freq = target_freq;
-                last_finetune = Instant::now();
-            }
-
-            std::thread::sleep(config.adjustment_interval);
+    loop {
+        let mut average_load: f32 = 0.0;
+        let mut burst_length: u32 = 0;
+        
+        //fill the sample buffer
+        for _ in 0..65 {
+            (average_load, burst_length) = gpu.reader.poll_and_get_load()?;
+            std::thread::sleep(config.sampling_interval);
         }
+        //println!("load {average_load} bl {burst_length}");
+        let burst = config
+            .burst_samples
+            .map_or(false, |burst_samples| burst_length >= burst_samples);
+
+        //Temperature Management
+        let temp = gpu.reader.read_temperature()?;
+        if let Some(max_temp) = config.throttling_temp {
+            if (temp > max_temp) && (max_freq >= gpu.reader.min_freq + freq_step) {
+                max_freq -= freq_step;
+                println!("throttling temp {temp} freq {max_freq}");
+            } else if let Some(recovery_temp) = config.throttling_recovery_temp
+                && temp < recovery_temp
+                && max_freq != gpu.reader.max_freq
+            {
+                max_freq = gpu.reader.max_freq;
+                println!("recover throttling temp {temp} freq {max_freq}");
+            }
+        }
+
+        if burst {
+            target_freq += burst_freq_step;
+        } else if average_load > config.up_thresh {
+            target_freq += freq_step;
+        } else if average_load < config.down_thresh {
+            target_freq -= freq_step;
+        }
+        target_freq = target_freq.clamp(gpu.reader.min_freq, max_freq);
+
+        let hit_bounds = target_freq == gpu.reader.min_freq || target_freq == max_freq;
+        let big_change = curr_freq.abs_diff(target_freq) >= config.significant_change;
+
+        if curr_freq != target_freq && (burst || hit_bounds || big_change ) {
+            gpu.writer.change_freq(target_freq)?;
+            curr_freq = target_freq;
+        }
+
+        std::thread::sleep(config.adjustment_interval - 64 * config.sampling_interval);
+    }
 
 }
 
@@ -205,28 +200,7 @@ fn parse_config(
             );
             10 * u64::from(sampling_interval)
         });
-    // us
-    let finetune_interval = intervals
-        .and_then(|t| t.get("finetune"))
-        .ok_or("is missing")
-        .and_then(|v| v.as_integer().ok_or("must be an integer"))
-        .and_then(|v| v.is_positive().then_some(v).ok_or("must be positive"))
-        .and_then(|v| {
-            (v >= i64::from(sampling_interval))
-                .then_some(v)
-                .ok_or("must be at least as high as timing.intervals.sample")
-        })
-        .and_then(|v| {
-            u64::try_from(v).map_err(|_| &*format!("cannot be greater than {}", u64::MAX).leak())
-        })
-        .unwrap_or_else(|s| {
-            println!(
-                "timing.intervals.finetune {s}, replaced with the default of \
-                50_000 * timing.intervals.adjust"
-            );
-            50_000 * u64::from(sampling_interval)
-        });
-
+    
     // samples
     let burst_samples = match timing
         .and_then(|t| t.get("burst-samples"))
@@ -311,22 +285,7 @@ fn parse_config(
     let freq_threshs = config
         .get("frequency-thresholds")
         .and_then(|t| t.as_table());
-    // MHz
-    let small_change = freq_threshs
-        .and_then(|t| t.get("finetune"))
-        .ok_or("is missing")
-        .and_then(|v| v.as_integer().ok_or("must be an integer"))
-        .and_then(|v| v.is_positive().then_some(v).ok_or("must be positive"))
-        .and_then(|v| {
-            u16::try_from(v).map_err(|_| &*format!("cannot be greater than {}", u16::MAX).leak())
-        })
-        .unwrap_or_else(|s| {
-            println!(
-                "frequency-thresholds.finetune {s}, replaced with the default of \
-                10 MHz"
-            );
-            10
-        });
+    
     // MHz
     let significant_change = freq_threshs
         .and_then(|t| t.get("adjust"))
@@ -339,9 +298,9 @@ fn parse_config(
         .unwrap_or_else(|s| {
             println!(
                 "frequency-thresholds.adjust {s}, replaced with the default of \
-                10 * frequency-thresholds.finetune"
+                10"
             );
-            10 * small_change
+            10
         });
 
     let load_threshs = config.get("load-target").and_then(|t| t.as_table());
@@ -558,7 +517,6 @@ fn parse_config(
     Ok((
         Config {
             sampling_interval: Duration::from_micros(u64::from(sampling_interval)),
-            finetune_interval: Duration::from_micros(u64::from(finetune_interval)),
             ramp_rate: ramp_rate,
             burst_samples: burst_samples,
             ramp_rate_burst: ramp_rate_burst,
@@ -566,7 +524,6 @@ fn parse_config(
             down_thresh: down_thresh,
             adjustment_interval: Duration::from_micros(adjustment_interval),
             significant_change: significant_change,
-            small_change: small_change,
             throttling_temp: throttling_temp,
             throttling_recovery_temp: throttling_recovery_temp,
         },
