@@ -83,7 +83,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let temp = gpu.reader.read_temperature()?;
         if let Some(max_temp) = config.throttling_temp {
             if (temp > max_temp) && (max_freq >= gpu.reader.min_freq + freq_step) {
-                max_freq -= freq_step;
+                max_freq -= config.significant_change;
                 println!("throttling temp {temp} freq {max_freq}");
             } else if let Some(recovery_temp) = config.throttling_recovery_temp
                 && temp < recovery_temp
