@@ -1,33 +1,21 @@
 # See the documentation for more information:
 # https://packit.dev/docs/configuration/
 
-specfile_path: cyan-skillfish-governor.spec
+specfile_path: cyan-skillfish-governor-tt.spec
 
 # name in upstream package repository or registry (e.g. in PyPI)
-upstream_package_name: cyan-skillfish-governor
+upstream_package_name: cyan-skillfish-governor-tt
 # downstream (Fedora) RPM package name
-downstream_package_name: cyan-skillfish-governor
+downstream_package_name: cyan-skillfish-governor-tt
 
 
 jobs:
 - job: copr_build
   identifier: main
   trigger: commit
-  branch: main
+  branch: tt
   owner: filippor
   project: bazzite
-  targets:
-    - fedora-stable
-    - fedora-development
-    - fedora-rawhide
-
-jobs:
-- job: copr_build
-  identifier: pull_request
-  trigger: pull_request
-  branch: main
-  additional_repos:
-    - copr://filippor/bazzite
   targets:
     - fedora-stable
     - fedora-development
