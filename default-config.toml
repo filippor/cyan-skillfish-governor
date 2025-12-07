@@ -78,6 +78,3 @@ voltage = 1025
 frequency = 2200
 voltage = 1045
 
-[[safe-points]]
-frequency = 2230
-voltage = 1055

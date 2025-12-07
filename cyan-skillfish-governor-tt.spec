@@ -5,8 +5,8 @@
 %global cargo_install_lib 0
 
 Name:           cyan-skillfish-governor-tt
-Version:        v0.1.3
-Release:        1.20250824121733165179.package.fedora.1.g07d7fe2%{?dist}
+Version:        0.1.3.1
+Release:        1.20251207225329323879.tt.5.g1ff46b5%{?dist}
 Summary:        # FIXME
 
 SourceLicense:  MIT
@@ -15,9 +15,14 @@ License:        MIT
 # LICENSE.dependencies contains a full license breakdown
 
 URL:            https://github.com/filippor/cyan-skillfish-governor
-Source:         cyan-skillfish-governor-v0.1.3.tar.gz
+Source:         cyan-skillfish-governor-tt-0.1.3.1.tar.gz
 
-BuildRequires:  cargo-rpm-macros >= 26 libdrm-devel
+BuildRequires: systemd cargo-rpm-macros >= 26 libdrm-devel
+
+Requires(post): systemd
+Requires(preun): systemd
+Requires(postun): systemd
+
 
 %global _description %{expand:
 %{summary}.}
@@ -25,7 +30,7 @@ BuildRequires:  cargo-rpm-macros >= 26 libdrm-devel
 %description %{_description}
 
 %prep
-%autosetup -n cyan-skillfish-governor-v0.1.3 -p1
+%autosetup -n cyan-skillfish-governor-tt-0.1.3.1 -p1
 %cargo_prep
 
 %generate_buildrequires
@@ -38,11 +43,21 @@ BuildRequires:  cargo-rpm-macros >= 26 libdrm-devel
 
 %install
 %cargo_install
-mkdir -p %{buildroot}/usr/lib/systemd/system/
-cp cyan-skillfish-governor.service %{buildroot}/usr/lib/systemd/system/cyan-skillfish-governor.service
+mkdir -p %{buildroot}/%{_unitdir}
+cp cyan-skillfish-governor.service %{buildroot}/%{_unitdir}/cyan-skillfish-governor.service
 mkdir -p %{buildroot}%{_sysconfdir}/cyan-skillfish-governor/
 cp default-config.toml %{buildroot}%{_sysconfdir}/cyan-skillfish-governor/config.toml
 
+
+%post
+%systemd_post cyan-skillfish-governor.service
+/bin/systemctl cyan-skillfish-governor.service >/dev/null 2>&1 || :
+
+%preun
+%systemd_preun cyan-skillfish-governor.service
+
+%postun
+%systemd_postun_with_restart cyan-skillfish-governor.service
 
 %if %{with check}
 %check
@@ -57,7 +72,8 @@ cp default-config.toml %{buildroot}%{_sysconfdir}/cyan-skillfish-governor/config
 %doc README.md
 %{_bindir}/cyan-skillfish-governor
 %{_sysconfdir}/cyan-skillfish-governor/config.toml
-/usr/lib/systemd/system/cyan-skillfish-governor.service
+%{_unitdir}/cyan-skillfish-governor.service
+
 
 %changelog
 %autochangelog
