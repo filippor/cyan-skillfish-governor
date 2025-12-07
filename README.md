@@ -18,13 +18,12 @@ Keys are:
     * `burst`: ramp rate in burst mode
 * `frequency-thresholds`: in MHz
   * `adjust`: how large a proposed adjustment must be to actually be carried out
-  * `finetune`: how large a fine-tuning adjustment must be to be actually carried out
 * `load-target`: as a fraction
   * `upper`: GPU load above which target frequency is increased
   * `lower`: GPU load below which target frequency is decreased
 * `temmperature` in °C
   * `throttling` if temperature is greather  start reducing max frequency
-  * `throttling_recovery` if temperaure is lower restore max frequncy
+  * `throttling_recovery` if temperaure is lower restore max frequency
 * `safe-points`: known safe/stable power points, array of tables with two keys:
   * `frequency`: GPU frequency in MHz
   * `voltage`: GPU supply voltage in mV
