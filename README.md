@@ -27,4 +27,4 @@ Keys are:
   * `frequency`: GPU frequency in MHz
   * `voltage`: GPU supply voltage in mV
 
-See also `default-config.toml`.
+See also `default-config.toml`. 
