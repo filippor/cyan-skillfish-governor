@@ -5,8 +5,8 @@
 %global cargo_install_lib 0
 
 Name:           cyan-skillfish-governor-tt
-Version:        0.1.6
-Release:        1.20251207233241631883.tt.0.g80f9d7f%{?dist}
+Version:        v0.1.7
+Release:        1.20251213124048676947.tt.0.g7f91021%{?dist}
 Summary:        # FIXME
 
 SourceLicense:  MIT
@@ -15,7 +15,7 @@ License:        MIT
 # LICENSE.dependencies contains a full license breakdown
 
 URL:            https://github.com/filippor/cyan-skillfish-governor
-Source:         cyan-skillfish-governor-tt-0.1.6.tar.gz
+Source:         cyan-skillfish-governor-tt-v0.1.7.tar.gz
 
 BuildRequires: systemd cargo-rpm-macros >= 26 libdrm-devel
 
@@ -30,7 +30,7 @@ Requires(postun): systemd
 %description %{_description}
 
 %prep
-%autosetup -n cyan-skillfish-governor-tt-0.1.6 -p1
+%autosetup -n cyan-skillfish-governor-tt-v0.1.7 -p1
 %cargo_prep
 
 %generate_buildrequires
@@ -44,21 +44,21 @@ Requires(postun): systemd
 %install
 %cargo_install
 mkdir -p %{buildroot}/%{_unitdir}
-cp cyan-skillfish-governor.service %{buildroot}/%{_unitdir}/cyan-skillfish-governor.service
-mkdir -p %{buildroot}%{_sysconfdir}/cyan-skillfish-governor/
-cp default-config.toml %{buildroot}%{_sysconfdir}/cyan-skillfish-governor/config.toml
+cp %name.service %{buildroot}/%{_unitdir}/%name.service
+mkdir -p %{buildroot}%{_sysconfdir}/%name/
+cp default-config.toml %{buildroot}%{_sysconfdir}/%name/config.toml
 mkdir -p %{buildroot}/usr/lib/systemd/system-preset/
-echo "enable cyan-skillfish-governor.service" > %{buildroot}/usr/lib/systemd/system-preset/50-cyan-skillfish-governor.preset
+echo "enable %name.service" > %{buildroot}/usr/lib/systemd/system-preset/50-%name.preset
 
 %post
-%systemd_post cyan-skillfish-governor.service
-/bin/systemctl cyan-skillfish-governor.service >/dev/null 2>&1 || :
+%systemd_post %name.service
+/bin/systemctl %name.service >/dev/null 2>&1 || :
 
 %preun
-%systemd_preun cyan-skillfish-governor.service
+%systemd_preun %name.service
 
 %postun
-%systemd_postun_with_restart cyan-skillfish-governor.service
+%systemd_postun_with_restart %name.service
 
 %if %{with check}
 %check
@@ -67,14 +67,12 @@ echo "enable cyan-skillfish-governor.service" > %{buildroot}/usr/lib/systemd/sys
 
 %files
 %license LICENSE
-%license cyan-skillfish-governor-v0.1.2-build/cyan-skillfish-governor-v0.1.2/LICENSE
-%license cyan-skillfish-governor-v0.1.3-build/cyan-skillfish-governor-v0.1.3/LICENSE
 %license LICENSE.dependencies
 %doc README.md
-%{_bindir}/cyan-skillfish-governor
-%{_sysconfdir}/cyan-skillfish-governor/config.toml
-%{_unitdir}/cyan-skillfish-governor.service
-/usr/lib/systemd/system-preset/50-cyan-skillfish-governor.preset
+%{_bindir}/%name
+%{_sysconfdir}/%name/config.toml
+%{_unitdir}/%name.service
+/usr/lib/systemd/system-preset/50-%name.preset
 
 
 %changelog
