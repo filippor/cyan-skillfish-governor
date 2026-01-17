@@ -1,4 +1,4 @@
-use cyan_skillfish_governor_direct::{Bc250Smu, Result};
+use cyan_skillfish_governor_smu::{Bc250Smu, Result};
 
 fn main() -> Result<()> {
     println!("Creating SMU instance...");

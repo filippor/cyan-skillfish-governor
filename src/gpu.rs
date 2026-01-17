@@ -1,4 +1,4 @@
-use cyan_skillfish_governor_direct::Bc250Smu;
+use cyan_skillfish_governor_smu::Bc250Smu;
 use libdrm_amdgpu_sys::{AMDGPU::DeviceHandle, PCI::BUS_INFO};
 use std::{collections::BTreeMap, fs::File, io::Error as IoError, os::fd::AsRawFd};
 

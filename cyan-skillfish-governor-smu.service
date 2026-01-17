@@ -1,0 +1,11 @@
+[Unit]
+Description=Cyan Skillfish GPU Governor
+Conflicts=cyan-skillfish-governor.service cyan-skillfish-governor-tt.service oberon-governor.service
+[Service]
+ExecStart=/usr/bin/cyan-skillfish-governor-smu /etc/cyan-skillfish-governor-smu/config.toml
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target
+

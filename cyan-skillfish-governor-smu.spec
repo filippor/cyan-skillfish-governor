@@ -4,7 +4,7 @@
 # prevent library files from being installed
 %global cargo_install_lib 0
 
-Name:           cyan-skillfish-governor-tt
+Name:           cyan-skillfish-governor-smu
 Version:        v0.1.7
 Release:        1.20251213124048676947.tt.0.g7f91021%{?dist}
 Summary:        # FIXME
@@ -15,7 +15,7 @@ License:        MIT
 # LICENSE.dependencies contains a full license breakdown
 
 URL:            https://github.com/filippor/cyan-skillfish-governor
-Source:         cyan-skillfish-governor-tt-v0.1.7.tar.gz
+Source:         cyan-skillfish-governor-smu-v0.1.7.tar.gz
 
 BuildRequires: systemd cargo-rpm-macros >= 26 libdrm-devel
 
@@ -30,7 +30,7 @@ Requires(postun): systemd
 %description %{_description}
 
 %prep
-%autosetup -n cyan-skillfish-governor-tt-v0.1.7 -p1
+%autosetup -n cyan-skillfish-governor-smu-v0.1.7 -p1
 %cargo_prep
 
 %generate_buildrequires

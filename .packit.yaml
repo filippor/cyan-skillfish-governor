@@ -1,19 +1,19 @@
 # See the documentation for more information:
 # https://packit.dev/docs/configuration/
 
-specfile_path: cyan-skillfish-governor-tt.spec
+specfile_path: cyan-skillfish-governor-smu.spec
 
 # name in upstream package repository or registry (e.g. in PyPI)
-upstream_package_name: cyan-skillfish-governor-tt
+upstream_package_name: cyan-skillfish-governor-smu
 # downstream (Fedora) RPM package name
-downstream_package_name: cyan-skillfish-governor-tt
+downstream_package_name: cyan-skillfish-governor-smu
 
 
 jobs:
 - job: copr_build
   identifier: main
   trigger: commit
-  branch: tt
+  branch: smu
   owner: filippor
   project: bazzite
   targets:

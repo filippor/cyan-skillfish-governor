@@ -1,6 +1,6 @@
 [package]
-name = "cyan_skillfish_governor_direct"
-version = "0.1.7"
+name = "cyan-skillfish-governor-smu"
+version = "0.2.0"
 license = "MIT"
 edition = "2024"
 

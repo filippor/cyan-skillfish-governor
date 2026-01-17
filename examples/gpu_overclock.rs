@@ -1,4 +1,4 @@
-use cyan_skillfish_governor_direct::{Bc250Smu, Result};
+use cyan_skillfish_governor_smu::{Bc250Smu, Result};
 
 fn main() -> Result<()> {
     let smu = Bc250Smu::new("0000:00:00.0", true, false, 100)?;
