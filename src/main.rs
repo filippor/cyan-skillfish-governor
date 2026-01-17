@@ -15,7 +15,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut gpu = GPU::new(config.safe_points)?;
 
     
-    let mut curr_freq: u32 = gpu.min_freq;
+    let mut curr_freq: u32 = gpu.get_freq()?;
     let mut target_freq = gpu.min_freq;
     gpu.change_freq(target_freq)?;
     let mut max_freq = gpu.max_freq;

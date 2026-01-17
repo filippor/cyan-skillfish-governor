@@ -3,6 +3,8 @@ GPU governor for the AMD Cyan Skillfish APU.
 Continously maintains a target frequency, and adjusts the actual GPU frequency when the deviation is too great.
 If the CPU is continously busy for too long, ramps up the target frequency rapidly.
 
+this version set voltage/frequency using directly the smu api thanks to the work of [bc250collective](https://github.com/bc250-collective/)
+
 Takes a TOML config file path as its only argument.
 Keys are:
 * `timing`
