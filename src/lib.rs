@@ -5,7 +5,7 @@ mod error;
 mod api;
 
 pub use error::{SmuError, Result};
-pub use codec::{mv_to_vid, vid_to_mv};
+pub use codec::{mv_to_vid, vid_to_mv, pack_u32,decode_u32, pack_s16, pack_f32,};
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -22,10 +22,13 @@ const DEFAULT_QUEUE_ADDRS: [(u8, (u32, u32, u32)); 5] = [
 
 pub struct Bc250Smu {
     allow_queue0: bool,
-    #[allow(dead_code)]  // Used indirectly through Arc clones in mailboxes
+    #[allow(dead_code)]
     transport: Arc<Bc250PciTransport>,
     queues: HashMap<u8, Bc250Mailbox>,
 }
+
+
+
 
 impl Bc250Smu {
     pub fn new(
@@ -112,5 +115,38 @@ impl Bc250Smu {
         } else {
             Ok(status as u32)
         }
+    }
+
+        /// Send test message and verify the response increments the value
+    /// 
+    /// This sends a value to the SMU and expects it to return value + 1.
+    /// Useful for verifying that SMU communication is working correctly.
+    pub fn test_message(&self, value: u32) -> Result<bool> {
+        let response = self.send_message(
+            3,
+            0x01,
+            value,
+            None,
+            Some(pack_u32),
+            Some(decode_u32),
+            true,
+        )?;
+        
+        if response != value + 1 {
+            return Err(crate::error::SmuError::TestMessageFailed {
+                expected: value + 1,
+                actual: response,
+            });
+        }
+        
+        Ok(true)
+    }
+
+    /// Check test message using value 123 (convenience wrapper)
+    /// 
+    /// This is a quick way to verify SMU communication is working.
+    /// Returns true if the SMU correctly responds with 124.
+    pub fn check_test_message(&self) -> Result<bool> {
+        self.test_message(123)
     }
 }

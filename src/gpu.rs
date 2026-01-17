@@ -43,17 +43,17 @@ impl GPU {
 
         // given in kHz, we need MHz
         let min_engine_clock = info.min_engine_clock / 1000;
-        let max_engine_clock = info.max_engine_clock / 1000;
+       // let max_engine_clock = info.max_engine_clock / 1000;
         let mut min_freq = *safe_points.first_key_value().unwrap().0;
         if u64::from(min_freq) < min_engine_clock {
             eprintln!("GPU minimum frequency lower than lowest safe frequency, clamping");
             min_freq = u32::try_from(min_engine_clock)?;
         }
-        let mut max_freq = *safe_points.last_key_value().unwrap().0;
-        if u64::from(max_freq) > max_engine_clock {
-            eprintln!("GPU maximum frequency higher than highest safe frequency, clamping");
-            max_freq = u32::try_from(max_engine_clock)?;
-        }
+        let max_freq = *safe_points.last_key_value().unwrap().0;
+        // if u64::from(max_freq) > max_engine_clock {
+        //     eprintln!("GPU maximum frequency higher than highest safe frequency, clamping");
+        //     max_freq = u32::try_from(max_engine_clock)?;
+        // }
 
         let smu = Bc250Smu::new("0000:00:00.0", true, false, 500)?;
         smu.check_test_message()?;
@@ -103,8 +103,8 @@ impl GPU {
             .1;
         println!("Set GPU frequency to {} MHz", freq);
         println!("Set GPU voltage to {} mV", vol);
-        //self.smu.force_gfx_vid(vol)?;
-        //self.smu.force_gfx_freq(freq)?;
+        self.smu.force_gfx_vid(vol)?;
+        self.smu.force_gfx_freq(freq)?;
         // Read back current settings
         let freq = self.smu.get_gfx_frequency()?;
         let vid = self.smu.get_gfx_vid()?;

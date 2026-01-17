@@ -19,11 +19,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut target_freq = gpu.min_freq;
     gpu.change_freq(target_freq)?;
     let mut max_freq = gpu.max_freq;
-
+    
     let burst_freq_step =
         (config.ramp_rate_burst * config.adjustment_interval.as_millis() as f32) as u32;
     let freq_step = (config.ramp_rate * config.adjustment_interval.as_millis() as f32) as u32;
-
+    println!("freq min {} max {} ",gpu.min_freq,max_freq);
     loop {
         let mut average_load: f32 = 0.0;
         let mut burst_length: u32 = 0;
@@ -33,7 +33,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             (average_load, burst_length) = gpu.poll_and_get_load()?;
             std::thread::sleep(config.sampling_interval);
         }
-        //println!("load {average_load} bl {burst_length}");
+        
         let burst = config
             .burst_samples
             .map_or(false, |burst_samples| burst_length >= burst_samples);
@@ -61,11 +61,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             target_freq -= freq_step;
         }
         target_freq = target_freq.clamp(gpu.min_freq, max_freq);
-
         let hit_bounds = target_freq == gpu.min_freq || target_freq == max_freq;
         let big_change = curr_freq.abs_diff(target_freq) >= config.significant_change;
 
         if curr_freq != target_freq && (burst || hit_bounds || big_change ) {
+            println!("freq curr {curr_freq} target {target_freq} temp {temp} load {average_load} bl {burst_length}");
             gpu.change_freq(target_freq)?;
             curr_freq = target_freq;
         }
