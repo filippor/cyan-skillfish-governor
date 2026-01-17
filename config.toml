@@ -11,10 +11,11 @@ burst = 50
 # number of samples
 [timing]
 burst-samples = 50
+down-events = 5
 
 # MHz
 [frequency-thresholds]
-adjust = 20
+adjust = 50
 
 # %
 [load-target]

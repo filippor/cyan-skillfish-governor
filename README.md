@@ -15,6 +15,7 @@ Keys are:
   * `burst-samples`: while the GPU has been busy for this many samples in a row,
     enter "burst mode", increasing the frequency at the `timing.ramp_rates.burst` rate.
     Set to 0 to disable burst mode.
+  * `down-events`: number of event below `load-target.low` to step down
   * `ramp_rates`: how quickly to increase/decrease GPU frequency, in MHz/ms
     * `normal`: ramp rate for normal adjustments
     * `burst`: ramp rate in burst mode

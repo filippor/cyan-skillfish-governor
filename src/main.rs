@@ -17,6 +17,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     
     let mut curr_freq: u32 = gpu.get_freq()?;
     let mut target_freq = gpu.min_freq;
+    let mut status :i16 = 0;
     gpu.change_freq(target_freq)?;
     let mut max_freq = gpu.max_freq;
     
@@ -56,10 +57,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         if burst {
             target_freq += burst_freq_step;
         } else if average_load > config.up_thresh {
+            status +=1;
             target_freq += freq_step;
         } else if average_load < config.down_thresh {
-            target_freq -= freq_step;
+            status -= 1;
+            if status < -config.down_events {
+                target_freq -= freq_step;
+            }
+        }else if status < 0{
+            status += 1;
         }
+        
         target_freq = target_freq.clamp(gpu.min_freq, max_freq);
         let hit_bounds = target_freq == gpu.min_freq || target_freq == max_freq;
         let big_change = curr_freq.abs_diff(target_freq) >= config.significant_change;
@@ -67,6 +75,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         if curr_freq != target_freq && (burst || hit_bounds || big_change ) {
             println!("freq curr {curr_freq} target {target_freq} temp {temp} load {average_load} bl {burst_length}");
             gpu.change_freq(target_freq)?;
+            status = 0;
             curr_freq = target_freq;
         }
 

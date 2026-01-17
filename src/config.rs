@@ -15,6 +15,7 @@ pub struct Config {
     pub significant_change: u32,
     pub up_thresh: f32,
     pub down_thresh: f32,
+    pub down_events: i16,
     pub throttling_temp: Option<u32>,
     pub throttling_recovery_temp: Option<u32>,
     pub safe_points: BTreeMap<u32, u32>,
@@ -90,6 +91,27 @@ impl Config
             None
         }
     };
+
+    const I16_MAX : i64= i16::MAX as i64;
+    let down_events = match timing
+        .and_then(|t| t.get("down-events"))
+        .ok_or("is missing")
+        .and_then(|v| v.as_integer().ok_or("must be an integer"))
+    {
+        Err(s) => {
+            println!(
+                "timing.down-events{s}, replaced with the default of \
+            10"
+            );
+            10
+        }
+        Ok(v @ 0..=I16_MAX) => v as i16,
+        Ok(_) => {
+            println!("timing.down-events is negative use default 10");
+            10
+        }
+    };
+
 
     let ramp_rates = timing
         .and_then(|t| t.get("ramp-rates"))
@@ -384,6 +406,7 @@ impl Config
             sampling_interval: Duration::from_micros(u64::from(sampling_interval)),
             ramp_rate: ramp_rate,
             burst_samples: burst_samples,
+            down_events:down_events,
             ramp_rate_burst: ramp_rate_burst,
             up_thresh: up_thresh,
             down_thresh: down_thresh,

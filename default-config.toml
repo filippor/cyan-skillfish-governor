@@ -11,6 +11,7 @@ burst = 50
 # number of samples
 [timing]
 burst-samples = 60
+down-events = 5
 
 # MHz
 [frequency-thresholds]

@@ -5,7 +5,7 @@
 %global cargo_install_lib 0
 
 Name:           cyan-skillfish-governor-smu
-Version:        v0.1.7
+Version:        v0.2.0
 Release:        1.20251213124048676947.tt.0.g7f91021%{?dist}
 Summary:        # FIXME
 
