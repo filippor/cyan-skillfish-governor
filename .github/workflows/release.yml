@@ -1,0 +1,111 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Release version (e.g., v0.2.1)'
+        required: true
+        type: string
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+    
+    - name: Install Rust toolchain
+      uses: dtolnay/rust-toolchain@stable
+    
+    - name: Install dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y libdrm-dev
+    
+    - name: Build release
+      run: cargo build --release --verbose
+    
+    - name: Run tests
+      run: cargo test --verbose
+    
+    - name: Determine version
+      id: version
+      run: |
+        if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
+          VERSION="${{ inputs.version }}"
+        else
+          VERSION="${GITHUB_REF#refs/tags/}"
+        fi
+        echo "VERSION=${VERSION}" >> $GITHUB_ENV
+        echo "version=${VERSION}" >> $GITHUB_OUTPUT
+    
+    - name: Create release package
+      run: |
+        VERSION="${{ env.VERSION }}"
+        PKG_NAME="cyan-skillfish-governor-smu-${VERSION}-x86_64-linux"
+        mkdir -p "${PKG_NAME}"
+        
+        # Copy files
+        cp target/release/cyan-skillfish-governor-smu "${PKG_NAME}/"
+        cp config.toml "${PKG_NAME}/"
+        cp README.md "${PKG_NAME}/" || true
+        cp LICENSE "${PKG_NAME}/" || true
+        
+        if [ -d "scripts" ]; then
+          cp scripts/install.sh "${PKG_NAME}/"
+          cp scripts/uninstall.sh "${PKG_NAME}/"
+          chmod +x "${PKG_NAME}/install.sh"
+          chmod +x "${PKG_NAME}/uninstall.sh"
+        fi
+        
+        chmod +x "${PKG_NAME}/cyan-skillfish-governor-smu"
+        
+        # Create tarball
+        tar -czf "${PKG_NAME}.tar.gz" "${PKG_NAME}"
+        
+        # Create checksums
+        sha256sum "${PKG_NAME}.tar.gz" > "${PKG_NAME}.tar.gz.sha256"
+        
+        echo "PKG_NAME=${PKG_NAME}" >> $GITHUB_ENV
+    
+    - name: Generate changelog
+      id: changelog
+      run: |
+        # Get the previous tag
+        PREV_TAG=$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || echo "")
+        
+        if [ -n "$PREV_TAG" ]; then
+          CHANGELOG=$(git log ${PREV_TAG}..HEAD --pretty=format:"- %s (%h)" --no-merges)
+        else
+          CHANGELOG=$(git log --pretty=format:"- %s (%h)" --no-merges -n 10)
+        fi
+        
+        # Save to file for multiline
+        echo "$CHANGELOG" > changelog.txt
+    
+    - name: Create Release
+      uses: softprops/action-gh-release@v1
+      with:
+        tag_name: ${{ env.VERSION }}
+        name: Release ${{ env.VERSION }}
+        body_path: changelog.txt
+        files: |
+          ${{ env.PKG_NAME }}.tar.gz
+          ${{ env.PKG_NAME }}.tar.gz.sha256
+        draft: false
+        prerelease: false
+        generate_release_notes: true
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -1,0 +1,88 @@
+name: Build
+
+on:
+  push:
+    branches: [ "main", "tt", "smu" ]
+  pull_request:
+    branches: [ "main", "tt", "smu" ]
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Install Rust toolchain
+      uses: dtolnay/rust-toolchain@stable
+    
+    - name: Install dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y libdrm-dev
+    
+    - name: Build
+      run: cargo build --release --verbose
+    
+    - name: Run tests
+      run: cargo test --verbose || true
+    
+    - name: Create package
+      run: |
+        # Create version based on commit
+        SHORT_SHA=$(git rev-parse --short HEAD)
+        BRANCH_NAME=$(echo "${{ github.ref_name }}" | sed 's/\//-/g')
+        VERSION="dev-${BRANCH_NAME}-${SHORT_SHA}"
+        
+        PKG_NAME="cyan-skillfish-governor-smu-${VERSION}-x86_64-linux"
+        mkdir -p "${PKG_NAME}"
+        
+        # Copy files
+        cp target/release/cyan-skillfish-governor-smu "${PKG_NAME}/"
+        cp config.toml "${PKG_NAME}/"
+        cp README.md "${PKG_NAME}/" || true
+        
+        if [ -d "scripts" ]; then
+          cp scripts/install.sh "${PKG_NAME}/" || true
+          cp scripts/uninstall.sh "${PKG_NAME}/" || true
+          chmod +x "${PKG_NAME}/install.sh" 2>/dev/null || true
+          chmod +x "${PKG_NAME}/uninstall.sh" 2>/dev/null || true
+        fi
+        
+        chmod +x "${PKG_NAME}/cyan-skillfish-governor-smu"
+        
+        # Create tarball
+        tar -czf "${PKG_NAME}.tar.gz" "${PKG_NAME}"
+        
+        echo "PKG_NAME=${PKG_NAME}" >> $GITHUB_ENV
+        echo "VERSION=${VERSION}" >> $GITHUB_ENV
+    
+    - name: Upload artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: ${{ env.PKG_NAME }}
+        path: ${{ env.PKG_NAME }}.tar.gz
+        retention-days: 30
+    
+    - name: Update prerelease
+      if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+      uses: softprops/action-gh-release@v1
+      with:
+        tag_name: latest-dev
+        name: "Development Build (Latest)"
+        body: |
+          **Automatic development build from main branch**
+          
+          Commit: ${{ github.sha }}
+          Branch: ${{ github.ref_name }}
+          
+          ⚠️ This is a pre-release build and may be unstable.
+        files: ${{ env.PKG_NAME }}.tar.gz
+        draft: false
+        prerelease: true
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

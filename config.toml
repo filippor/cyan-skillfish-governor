@@ -6,12 +6,12 @@ adjust = 100_000
 # MHz/ms
 [timing.ramp-rates]
 normal = 1
-burst = 50
+burst = 10
 
 # number of samples
 [timing]
 burst-samples = 50
-down-events = 5
+down-events = 50
 
 # MHz
 [frequency-thresholds]

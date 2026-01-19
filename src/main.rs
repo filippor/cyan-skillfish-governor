@@ -78,8 +78,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let big_change = curr_freq.abs_diff(target_freq) >= config.significant_change;
 
         if curr_freq != target_freq && (burst || hit_bounds || big_change) {
+            let de = config.down_events;
             println!(
-                "freq curr {curr_freq} target {target_freq} temp {temp} status {status} load {average_load} bl {burst_length}"
+                "freq curr {curr_freq} target {target_freq} temp {temp} status {status} de {de} load {average_load} bl {burst_length}"
             );
             gpu.change_freq(target_freq)?;
             status = 0;
