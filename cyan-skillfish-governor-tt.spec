@@ -48,7 +48,7 @@ cp %name.service %{buildroot}/%{_unitdir}/%name.service
 mkdir -p %{buildroot}%{_sysconfdir}/%name/
 cp default-config.toml %{buildroot}%{_sysconfdir}/%name/config.toml
 mkdir -p %{buildroot}/usr/lib/systemd/system-preset/
-echo "enable %name.service" > %{buildroot}/usr/lib/systemd/system-preset/50-%name.preset
+#echo "enable %name.service" > %{buildroot}/usr/lib/systemd/system-preset/50-%name.preset
 
 %post
 %systemd_post %name.service
@@ -72,7 +72,7 @@ echo "enable %name.service" > %{buildroot}/usr/lib/systemd/system-preset/50-%nam
 %{_bindir}/%name
 %{_sysconfdir}/%name/config.toml
 %{_unitdir}/%name.service
-/usr/lib/systemd/system-preset/50-%name.preset
+#/usr/lib/systemd/system-preset/50-%name.preset
 
 
 %changelog
