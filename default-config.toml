@@ -27,7 +27,7 @@ lower = 0.65
 throttling = 85
 throttling_recovery = 75
 
-[safe-points]]
+[[safe-points]]
 frequency = 1000
 voltage = 800
 
