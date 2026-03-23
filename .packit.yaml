@@ -20,6 +20,15 @@ jobs:
     - fedora-stable
     - fedora-development
     - fedora-rawhide
+- job: copr_build
+  identifier: pull_request
+  trigger: pull_request
+  additional_repos:
+    - copr://filippor/bazzite
+  targets:
+    - fedora-stable
+    - fedora-development
+    - fedora-rawhide
 
 - job: copr_build
   identifier: release

@@ -1,15 +1,48 @@
 mod config;
 mod gpu;
-use config::Config;
+mod gpu_usage_fix;
+use config::{Config, GpuUsageMethod};
 use gpu::GPU;
+use gpu_usage_fix::GpuUsageFix;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let mut verbose = false;
+    let mut config_path: Option<String> = None;
+
+    for arg in std::env::args().skip(1) {
+        match arg.as_str() {
+            "-v" | "--verbose" => verbose = true,
+            s if s.starts_with('-') => return Err(format!("unknown option: {s}").into()),
+            _ => {
+                if config_path.is_some() {
+                    return Err("too many positional arguments".into());
+                }
+                config_path = Some(arg);
+            }
+        }
+    }
+
     let config = Config::new(
-        std::env::args()
-            .nth(1)
+        config_path
             .map(std::fs::read_to_string)
             .unwrap_or(Ok("".to_string())),
     )?;
+
+    let gpu_usage_fix = if config.gpu_metric_fix {
+        match GpuUsageFix::start() {
+            Ok(fix) => {
+                println!("GPU usage metrics fix enabled");
+                Some(fix)
+            }
+            Err(e) => {
+                eprintln!("GPU usage metrics fix disabled: {e}");
+                None
+            }
+        }
+    } else {
+        println!("GPU usage metrics fix disabled by config");
+        None
+    };
 
     let mut gpu = GPU::new(config.safe_points)?;
 
@@ -25,13 +58,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let freq_step = (config.ramp_rate * config.adjustment_interval.as_millis() as f32) as u32;
     println!("freq min {} max {} ", gpu.min_freq, max_freq);
     loop {
-        let mut average_load: f32 = 0.0;
-        let mut burst_length: u32 = 0;
+        let  average_load: f32;
+        let  burst_length: u32;
 
-        //fill the sample buffer
-        for _ in 0..65 {
-            (average_load, burst_length) = gpu.poll_and_get_load()?;
-            std::thread::sleep(config.sampling_interval);
+        (average_load, burst_length) = match config.gpu_usage_method {
+            GpuUsageMethod::BusyFlag => gpu.poll_and_get_load(config.sampling_interval)?,
+            GpuUsageMethod::Process => gpu.poll_and_get_load_from_process()?,
+        };
+
+        if let Some(fix) = &gpu_usage_fix {
+            fix.set_usage_percent(average_load * 100.0);
         }
 
         let burst = config
@@ -43,13 +79,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         if let Some(max_temp) = config.throttling_temp {
             if (temp > max_temp) && (max_freq >= gpu.min_freq + freq_step) {
                 max_freq -= config.significant_change;
-                println!("throttling temp {temp} freq {max_freq}");
+                if verbose {
+                    println!("throttling temp {temp} freq {max_freq}");
+                }
             } else if let Some(recovery_temp) = config.throttling_recovery_temp
                 && temp < recovery_temp
                 && max_freq != gpu.max_freq
             {
                 max_freq = gpu.max_freq;
-                println!("recover throttling temp {temp} freq {max_freq}");
+                if verbose {
+                    println!("recover throttling temp {temp} freq {max_freq}");
+                }
             }
         }
 
@@ -78,15 +118,23 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let big_change = curr_freq.abs_diff(target_freq) >= config.significant_change;
 
         if curr_freq != target_freq && (burst || hit_bounds || big_change) {
-            let de = config.down_events;
-            println!(
-                "freq curr {curr_freq} target {target_freq} temp {temp} status {status} de {de} load {average_load} bl {burst_length}"
-            );
+            if verbose {
+                let de = config.down_events;
+                println!(
+                    "freq curr {} target {} temp {} status {} de {} load {:.2} bl {}",
+                    curr_freq, target_freq, temp, status, de, average_load, burst_length
+                );
+            }
+
             gpu.change_freq(target_freq)?;
             status = 0;
             curr_freq = target_freq;
         }
 
-        std::thread::sleep(config.adjustment_interval - 64 * config.sampling_interval);
+        let sleep_duration = match config.gpu_usage_method {
+            GpuUsageMethod::BusyFlag => config.adjustment_interval - 65 * config.sampling_interval,
+            GpuUsageMethod::Process => config.adjustment_interval,
+        };
+        std::thread::sleep(sleep_duration);
     }
 }
