@@ -1,6 +1,11 @@
 use cyan_skillfish_governor_smu::Bc250Smu;
 use libdrm_amdgpu_sys::{AMDGPU::DeviceHandle, PCI::BUS_INFO};
-use std::{collections::BTreeMap, fs::File, io::Error as IoError, os::fd::AsRawFd};
+use std::{
+    collections::{BTreeMap, HashMap},
+    fs::{self, File},
+    io::Error as IoError,
+    os::fd::AsRawFd,
+};
 
 // cyan_skillfish.gfx1013.mmGRBM_STATUS
 const GRBM_STATUS_REG: u32 = 0x2004;
@@ -10,6 +15,7 @@ const GPU_ACTIVE_BIT: u8 = 31;
 pub struct GPU {
     dev_handle: DeviceHandle,
     samples: u64,
+    process_prev_gfx_time: Option<u64>,
     pub min_freq: u32,
     pub max_freq: u32,
 
@@ -48,29 +54,44 @@ impl GPU {
         smu.unforce_gfx_freq()?;
         smu.unforce_gfx_vid()?;
         Ok(GPU {
-            dev_handle: dev_handle,
+            dev_handle,
             samples: 0,
-            min_freq: min_freq,
-            max_freq: max_freq,
-
-            smu: smu,
-            safe_points: safe_points,
+            process_prev_gfx_time: None,
+            min_freq,
+            max_freq,
+            smu,
+            safe_points,
         })
     }
 
-    pub fn poll_and_get_load(&mut self) -> Result<(f32, u32), IoError> {
-        let res = self
-            .dev_handle
-            .read_mm_registers(GRBM_STATUS_REG)
-            .map_err(IoError::from_raw_os_error)?;
-        let gui_busy = (res & (1 << GPU_ACTIVE_BIT)) > 0;
-        self.samples <<= 1;
-        if gui_busy {
-            self.samples |= 1;
+    pub fn poll_and_get_load(&mut self, sampling_interval: std::time::Duration) -> Result<(f32, u32), IoError> {
+        for _ in 0..65 {
+            let res = self
+                .dev_handle
+                .read_mm_registers(GRBM_STATUS_REG)
+                .map_err(IoError::from_raw_os_error)?;
+            let gpu_busy = (res & (1 << GPU_ACTIVE_BIT)) > 0;
+
+            self.samples <<= 1;
+            if gpu_busy {
+                self.samples |= 1;
+            }
+            std::thread::sleep(sampling_interval);
         }
+
         let average_load = (self.samples.count_ones() as f32) / 64.0;
         let burst_length = (!self.samples).trailing_zeros();
         Ok((average_load, burst_length))
+    }
+
+    pub fn poll_and_get_load_from_process(&mut self) -> Result<(f32, u32), IoError> {
+        let now = get_total_gfx_time_from_fdinfo();
+        let prev = self.process_prev_gfx_time.replace(now).unwrap_or(now);
+        let delta = now.saturating_sub(prev);
+
+        let usage01 = ((delta as f32) / 1_000_000_000.0).clamp(0.0, 1.0);
+
+        Ok((usage01, 0))
     }
 
     pub fn read_temperature(&mut self) -> Result<u32, IoError> {
@@ -99,4 +120,56 @@ impl GPU {
     pub fn get_freq(& self) -> Result<u32,IoError>{
         Ok(self.smu.get_gfx_frequency()?)
     }
+}
+
+fn get_total_gfx_time_from_fdinfo() -> u64 {
+    let mut gfx_times: HashMap<u32, u64> = HashMap::new();
+
+    let proc_entries = match fs::read_dir("/proc") {
+        Ok(v) => v,
+        Err(_) => return 0,
+    };
+
+    for proc_entry in proc_entries.flatten() {
+        let name = proc_entry.file_name();
+        let name = name.to_string_lossy();
+        if !name.chars().all(|c| c.is_ascii_digit()) {
+            continue;
+        }
+
+        let fdinfo_dir = proc_entry.path().join("fdinfo");
+        let fdinfos = match fs::read_dir(fdinfo_dir) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+
+        for fdinfo in fdinfos.flatten() {
+            let content = match fs::read_to_string(fdinfo.path()) {
+                Ok(c) => c,
+                Err(_) => continue,
+            };
+
+            let mut cid: Option<u32> = None;
+            let mut gfx: u64 = 0;
+
+            for line in content.lines() {
+                if let Some(v) = line.strip_prefix("drm-client-id:") {
+                    cid = v.trim().parse::<u32>().ok();
+                } else if let Some(v) = line.strip_prefix("drm-engine-gfx:") {
+                    if let Some(tok) = v.split_whitespace().next() {
+                        gfx = tok.parse::<u64>().unwrap_or(0);
+                    }
+                }
+            }
+
+            if let Some(cid) = cid {
+                let e = gfx_times.entry(cid).or_insert(0);
+                if gfx > *e {
+                    *e = gfx;
+                }
+            }
+        }
+    }
+
+    gfx_times.values().copied().sum()
 }
