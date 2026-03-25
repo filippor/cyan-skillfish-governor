@@ -2,7 +2,7 @@ use std::{
     fs::{self, File, OpenOptions},
     io::{self, Read, Seek, SeekFrom, Write},
     path::Path,
-    process::Command,
+    process::{Command, Stdio},
 };
 
 const REAL_METRICS: &str = "/sys/class/drm/card1/device/gpu_metrics";
@@ -85,7 +85,10 @@ fn mount_bind(src: &str, dst: &str) -> io::Result<()> {
 }
 
 fn umount_bind(dst: &str) -> io::Result<()> {
-    let status = Command::new("umount").arg(dst).status()?;
+    let status = Command::new("umount")
+        .arg(dst)
+        .stderr(Stdio::null())
+        .status()?;
     if status.success() {
         Ok(())
     } else {

@@ -4,8 +4,18 @@ mod gpu_usage_fix;
 use config::Config;
 use gpu::GPU;
 use gpu_usage_fix::GpuUsageFix;
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let running = Arc::new(AtomicBool::new(true));
+    let running_signal = Arc::clone(&running);
+    ctrlc::set_handler(move || {
+        running_signal.store(false, Ordering::SeqCst);
+    })?;
+
     let mut verbose = false;
     let mut config_path: Option<String> = None;
 
@@ -65,7 +75,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     println!("freq min {} max {} ", gpu.min_freq, max_freq);
 
-    loop {
+    while running.load(Ordering::Relaxed) {
         let loop_start = std::time::Instant::now();
 
         let average_load: f32;
@@ -150,4 +160,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             std::thread::sleep(config.adjustment_interval - elapsed);
         }
     }
+    println!("Shutting down gracefully...");
+    if let Err(e) = gpu.shutdown() {
+        eprintln!("System exit restore failed: {e}");
+    }
+    Ok(())
 }

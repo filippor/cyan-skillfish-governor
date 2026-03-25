@@ -18,6 +18,15 @@ const GPU_ACTIVE_BIT: u8 = 31;
 trait FreqStrategy {
     fn change_freq(&mut self, freq: u32, vol: u32) -> Result<(), IoError>;
     fn get_freq(&self) -> Result<u32, IoError>;
+    fn shutdown(&mut self) -> Result<(), IoError> {
+        Ok(())
+    }
+    fn clamp_safe_points(
+        &self,
+        safe_points: BTreeMap<u32, u32>,
+    ) -> Result<BTreeMap<u32, u32>, IoError> {
+        Ok(safe_points)
+    }
 }
 
 trait UsageStrategy {
@@ -32,7 +41,6 @@ trait UsageStrategy {
 struct SmuFreqStrategy {
     smu: Bc250Smu,
 }
-
 struct BusyFlagUsageStrategy {
     samples: u64,
 }
@@ -73,25 +81,26 @@ impl GPU {
             ))?;
         }
         let card = File::open(location.get_drm_render_path()?)?;
-        let (dev_handle, _, _) =
-            DeviceHandle::init(card.as_raw_fd()).map_err(IoError::from_raw_os_error)?;
+        let (dev_handle, _, _) = DeviceHandle::init(card.as_raw_fd())
+            .map_err(|e| IoError::other(format!("DeviceHandle::init failed: {e}")))?;
 
         let gpu_sysfs_path = dev_handle
             .get_sysfs_path()
-            .map_err(IoError::from_raw_os_error)?;
+            .map_err(|e| IoError::other(format!("get_sysfs_path failed: {e}")))?;
 
         let process_fdinfo_pdev = format!(
             "{:04x}:{:02x}:{:02x}.{}",
             location.domain, location.bus, location.dev, location.func
         );
 
-        let min_freq = *safe_points.first_key_value().unwrap().0;
-        let max_freq = *safe_points.last_key_value().unwrap().0;
-
         let freq_strategy: Box<dyn FreqStrategy> = match gpu_set_method {
             GpuSetMethod::Smu => Box::new(SmuFreqStrategy::new()?),
             GpuSetMethod::Kernel => Box::new(KernelFreqStrategy::new(gpu_sysfs_path)?),
         };
+
+        let safe_points = freq_strategy.clamp_safe_points(safe_points)?;
+        let min_freq = *safe_points.first_key_value().unwrap().0;
+        let max_freq = *safe_points.last_key_value().unwrap().0;
 
         let usage_strategy: Box<dyn UsageStrategy> = match gpu_usage_method {
             GpuUsageMethod::BusyFlag => Box::new(BusyFlagUsageStrategy { samples: 0 }),
@@ -146,6 +155,10 @@ impl GPU {
 
     pub fn get_freq(&self) -> Result<u32, IoError> {
         self.freq_strategy.get_freq()
+    }
+
+    pub fn shutdown(&mut self) -> Result<(), IoError> {
+        self.freq_strategy.shutdown()
     }
 }
 
@@ -246,28 +259,46 @@ impl FreqStrategy for SmuFreqStrategy {
     fn get_freq(&self) -> Result<u32, IoError> {
         Ok(self.smu.get_gfx_frequency()?)
     }
+
+    fn shutdown(&mut self) -> Result<(), IoError> {
+        let _ = self.smu.unforce_gfx_freq();
+        let _ = self.smu.unforce_gfx_vid();
+        Ok(())
+    }
 }
 
 struct KernelFreqStrategy {
     pp_file: File,
     dpm_sclk: PathBuf,
+    pp_od_clk_voltage_path: PathBuf,
 }
 
 impl KernelFreqStrategy {
     fn new(gpu_sysfs_path: PathBuf) -> Result<Self, IoError> {
+        let pp_od_clk_voltage_path = gpu_sysfs_path.join("pp_od_clk_voltage");
         let pp_file = std::fs::OpenOptions::new()
             .write(true)
-            .open(gpu_sysfs_path.join("pp_od_clk_voltage"))?;
+            .open(&pp_od_clk_voltage_path)?;
         let dpm_sclk = gpu_sysfs_path.join("pp_dpm_sclk");
-        Ok(Self { pp_file, dpm_sclk })
+        Ok(Self {
+            pp_file,
+            dpm_sclk,
+            pp_od_clk_voltage_path,
+        })
     }
 }
 
 impl FreqStrategy for KernelFreqStrategy {
     fn change_freq(&mut self, freq: u32, vol: u32) -> Result<(), IoError> {
-        self.pp_file
-            .write_all(format!("vc 0 {freq} {vol}").as_bytes())?;
-        self.pp_file.write_all("c".as_bytes())?;
+        let cmd = format!("vc 0 {freq} {vol}");
+        self.pp_file.write_all(cmd.as_bytes()).map_err(|e| {
+            IoError::other(format!("writing '{cmd}' to pp_od_clk_voltage failed: {e}"))
+        })?;
+        self.pp_file.write_all("c".as_bytes()).map_err(|e| {
+            IoError::other(format!(
+                "writing 'c' (commit) to pp_od_clk_voltage failed: {e}"
+            ))
+        })?;
         Ok(())
     }
 
@@ -289,6 +320,55 @@ impl FreqStrategy for KernelFreqStrategy {
             .map_err(IoError::other)?;
 
         Ok(freq_mhz)
+    }
+
+    fn clamp_safe_points(
+        &self,
+        safe_points: BTreeMap<u32, u32>,
+    ) -> Result<BTreeMap<u32, u32>, IoError> {
+        let content = match std::fs::read_to_string(&self.pp_od_clk_voltage_path) {
+            Ok(c) => c,
+            Err(e) => {
+                eprintln!(
+                    "warning: could not read pp_od_clk_voltage for SCLK limits ({e}), skipping clamp"
+                );
+                return Ok(safe_points);
+            }
+        };
+
+        let Some((sclk_min, sclk_max)) = content.lines().find_map(|line| {
+            let rest = line.trim().strip_prefix("SCLK:")?;
+            let mut vals = rest
+                .split_whitespace()
+                .filter_map(|t| t.strip_suffix("Mhz")?.parse::<u32>().ok());
+            Some((vals.next()?, vals.next()?))
+        }) else {
+            eprintln!("warning: SCLK limits not found in pp_od_clk_voltage, skipping clamp");
+            return Ok(safe_points);
+        };
+
+        Ok(safe_points.into_iter().fold(BTreeMap::new(), |mut acc, (freq, vol)| {
+            let clamped_freq = freq.clamp(sclk_min, sclk_max);
+            if clamped_freq != freq {
+                eprintln!(
+                    "warning: clamping safe point frequency {}Mhz -> {}Mhz (SCLK range {}-{}Mhz)",
+                    freq, clamped_freq, sclk_min, sclk_max
+                );
+            }
+
+            match acc.get_mut(&clamped_freq) {
+                Some(existing_vol) => {
+                    if vol > *existing_vol {
+                        *existing_vol = vol;
+                    }
+                }
+                None => {
+                    acc.insert(clamped_freq, vol);
+                }
+            }
+
+            acc
+        }))
     }
 }
 
