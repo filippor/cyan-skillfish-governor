@@ -3,13 +3,15 @@ GPU governor for the AMD Cyan Skillfish APU.
 Continously maintains a target frequency, and adjusts the actual GPU frequency when the deviation is too great.
 If the CPU is continously busy for too long, ramps up the target frequency rapidly.
 
-this version set voltage/frequency using directly the smu api thanks to the work of [bc250collective](https://github.com/bc250-collective/)
+this version can set voltage/frequency using either the smu api (thanks to the work of [bc250collective](https://github.com/bc250-collective/)) or the kernel sysfs path.
 
 Takes a TOML config file path as its only argument.
 Keys are:
 * `gpu-usage`
   * `fix-metrics` : boolean default true fix gpu usage metrics
   * `method` : 'process' or 'busy-flag' default 'busy-flag' choose the method to get the gpu usage sample busy-flag or total time from process
+* `gpu`
+  * `set-method`: 'smu' or 'kernel' default 'smu' choose the frequency/voltage control backend
 * `timing`
   * `intervals`: in µs
     * `sample`: how often to sample GPU load used only for gpu-usage = 'busy-flag'

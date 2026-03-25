@@ -1,9 +1,8 @@
+use crate::codec::{decode_u32, mv_to_vid, pack_u32, vid_to_mv};
 use crate::{Bc250Smu, Result};
-use crate::codec::{decode_u32, pack_u32, mv_to_vid, vid_to_mv};
 
 impl Bc250Smu {
     // Queue 0 methods - General SMU control
-
 
     pub fn get_smu_version(&self) -> Result<u32> {
         self.send_message(0, 0x02, 0, None, None, Some(decode_u32), true)
@@ -162,12 +161,20 @@ impl Bc250Smu {
     }
 
     pub fn set_core_enable_mask(&self, mask: u8) -> Result<()> {
-        self.send_message(0, 0x2C, (mask & 0xFF) as u32, None, Some(pack_u32), None, true)?;
+        self.send_message(
+            0,
+            0x2C,
+            (mask & 0xFF) as u32,
+            None,
+            Some(pack_u32),
+            None,
+            true,
+        )?;
         Ok(())
     }
 
     /// GFX CAC (Current Aware Control) weight operation
-    /// 
+    ///
     /// CAC weights are not well documented. Related to AMD patents.
     pub fn gfx_cac_weight_operation(&self, value: u32) -> Result<()> {
         self.send_message(0, 0x2F, value, None, Some(pack_u32), None, true)?;

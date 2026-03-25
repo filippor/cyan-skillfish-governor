@@ -1,4 +1,3 @@
-
 use std::{
     collections::BTreeMap,
     io::{Error as IoError, ErrorKind},
@@ -10,6 +9,30 @@ use toml::Table;
 pub enum GpuUsageMethod {
     BusyFlag,
     Process,
+}
+
+impl GpuUsageMethod {
+    pub fn as_config_value(self) -> &'static str {
+        match self {
+            Self::BusyFlag => "busy-flag",
+            Self::Process => "process",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub enum GpuSetMethod {
+    Smu,
+    Kernel,
+}
+
+impl GpuSetMethod {
+    pub fn as_config_value(self) -> &'static str {
+        match self {
+            Self::Smu => "smu",
+            Self::Kernel => "kernel",
+        }
+    }
 }
 
 pub struct Config {
@@ -27,13 +50,11 @@ pub struct Config {
     pub safe_points: BTreeMap<u32, u32>,
     pub gpu_metric_fix: bool,
     pub gpu_usage_method: GpuUsageMethod,
+    pub gpu_set_method: GpuSetMethod,
 }
 
-impl Config 
-{
-    pub fn new(
-    path: Result<String, std::io::Error>,
-) -> Result<Config, Box<dyn std::error::Error>> {
+impl Config {
+    pub fn new(path: Result<String, std::io::Error>) -> Result<Config, Box<dyn std::error::Error>> {
         let config = path?.parse::<Table>()?;
 
         let timing = config.get("timing").and_then(|t| t.as_table());
@@ -47,7 +68,8 @@ impl Config
             .and_then(|v| v.as_integer().ok_or("must be an integer"))
             .and_then(|v| v.is_positive().then_some(v).ok_or("must be positive"))
             .and_then(|v| {
-                u32::try_from(v).map_err(|_| &*format!("cannot be greater than {}", u32::MAX).leak())
+                u32::try_from(v)
+                    .map_err(|_| &*format!("cannot be greater than {}", u32::MAX).leak())
             })
             .unwrap_or_else(|s| {
                 println!("timing.intervals.sample {s}, replaced with the default value of 2 ms");
@@ -65,7 +87,8 @@ impl Config
                     .ok_or("must be at least as high as timing.intervals.sample")
             })
             .and_then(|v| {
-                u64::try_from(v).map_err(|_| &*format!("cannot be greater than {}", u64::MAX).leak())
+                u64::try_from(v)
+                    .map_err(|_| &*format!("cannot be greater than {}", u64::MAX).leak())
             })
             .unwrap_or_else(|s| {
                 println!(
@@ -100,7 +123,7 @@ impl Config
             }
         };
 
-        const I16_MAX : i64= i16::MAX as i64;
+        const I16_MAX: i64 = i16::MAX as i64;
         let down_events = match timing
             .and_then(|t| t.get("down-events"))
             .ok_or("is missing")
@@ -119,7 +142,6 @@ impl Config
                 10
             }
         };
-
 
         let ramp_rates = timing
             .and_then(|t| t.get("ramp-rates"))
@@ -180,7 +202,7 @@ impl Config
         let freq_threshs = config
             .get("frequency-thresholds")
             .and_then(|t| t.as_table());
-        
+
         // MHz
         let significant_change = freq_threshs
             .and_then(|t| t.get("adjust"))
@@ -188,7 +210,8 @@ impl Config
             .and_then(|v| v.as_integer().ok_or("must be an integer"))
             .and_then(|v| v.is_positive().then_some(v).ok_or("must be positive"))
             .and_then(|v| {
-                u32::try_from(v).map_err(|_| &*format!("cannot be greater than {}", u32::MAX).leak())
+                u32::try_from(v)
+                    .map_err(|_| &*format!("cannot be greater than {}", u32::MAX).leak())
             })
             .unwrap_or_else(|s| {
                 println!(
@@ -432,7 +455,7 @@ impl Config
                             );
                             v
                         }
-                        None => {
+                        _ => {
                             println!(
                                 "gpu-usage.fix-metrics {s}; gpu-metric-fix must be a boolean, replaced with the default value of true"
                             );
@@ -451,7 +474,6 @@ impl Config
             .and_then(|t| t.get("method"))
             .and_then(|v| v.as_str())
         {
-            None => GpuUsageMethod::BusyFlag, // default when missing
             Some("busy-flag") => GpuUsageMethod::BusyFlag,
             Some("process") => GpuUsageMethod::Process,
             Some(other) => {
@@ -461,6 +483,21 @@ impl Config
                 );
                 GpuUsageMethod::BusyFlag
             }
+            _ => GpuUsageMethod::BusyFlag, // default when missing
+        };
+
+        let gpu_section = config.get("gpu").and_then(|t| t.as_table());
+        let gpu_set_method = match gpu_section
+            .and_then(|t| t.get("set-method"))
+            .and_then(|v| v.as_str())
+        {
+            Some("smu") => GpuSetMethod::Smu,
+            Some("kernel") => GpuSetMethod::Kernel,
+            Some(other) => {
+                println!("gpu.set-method '{}' is invalid, using default smu", other);
+                GpuSetMethod::Smu
+            }
+            _ => GpuSetMethod::Smu,
         };
 
         Ok(Config {
@@ -478,7 +515,7 @@ impl Config
             safe_points,
             gpu_metric_fix,
             gpu_usage_method,
+            gpu_set_method,
         })
     }
 }
-

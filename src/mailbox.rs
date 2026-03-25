@@ -1,6 +1,6 @@
-use std::sync::Mutex;
 use crate::error::{Result, SmuError};
 use crate::transport::Bc250PciTransport;
+use std::sync::Mutex;
 
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -88,7 +88,7 @@ impl Bc250Mailbox {
         while remaining > 0 {
             remaining -= 1;
             let status = transport.read_smu_reg(self.rsp_addr)?;
-            
+
             if let Some(smu_status) = SmuStatus::from_u32(status) {
                 return Ok(smu_status);
             }

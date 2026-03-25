@@ -89,6 +89,9 @@ fn umount_bind(dst: &str) -> io::Result<()> {
     if status.success() {
         Ok(())
     } else {
-        Err(io::Error::other(format!("umount {} failed: {}", dst, status)))
+        Err(io::Error::other(format!(
+            "umount {} failed: {}",
+            dst, status
+        )))
     }
 }

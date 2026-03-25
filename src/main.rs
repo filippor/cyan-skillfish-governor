@@ -1,7 +1,7 @@
 mod config;
 mod gpu;
 mod gpu_usage_fix;
-use config::{Config, GpuUsageMethod};
+use config::Config;
 use gpu::GPU;
 use gpu_usage_fix::GpuUsageFix;
 
@@ -28,29 +28,27 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .unwrap_or(Ok("".to_string())),
     )?;
 
-    let gpu_usage_method = match config.gpu_usage_method {
-        GpuUsageMethod::BusyFlag => "busy_flag",
-        GpuUsageMethod::Process => "process",
-    };
-    println!("GPU usage method configured: {gpu_usage_method}");
-
     let mut gpu_usage_fix = if config.gpu_metric_fix {
-        match GpuUsageFix::start() {
-            Ok(fix) => {
-                println!("GPU usage metrics fix enabled");
-                Some(fix)
-            }
-            Err(e) => {
-                eprintln!("GPU usage metrics fix disabled: {e}");
-                None
-            }
-        }
+        Some(GpuUsageFix::start()?)
     } else {
         println!("GPU usage metrics fix disabled by config");
         None
     };
 
-    let mut gpu = GPU::new(config.safe_points)?;
+    println!(
+        "GPU usage method configured: {}",
+        config.gpu_usage_method.as_config_value()
+    );
+    println!(
+        "GPU set method configured: {}",
+        config.gpu_set_method.as_config_value()
+    );
+
+    let mut gpu = GPU::new(
+        config.safe_points,
+        config.gpu_set_method,
+        config.gpu_usage_method,
+    )?;
 
     let mut curr_freq: u32 = gpu.get_freq()?;
     let mut target_freq = gpu.min_freq;
@@ -64,15 +62,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let freq_step = (config.ramp_rate * config.adjustment_interval.as_millis() as f32) as u32;
     println!("freq min {} max {} ", gpu.min_freq, max_freq);
     loop {
-        let  average_load: f32;
-        let  burst_length: u32;
+        let loop_start = std::time::Instant::now();
 
-        (average_load, burst_length) = match config.gpu_usage_method {
-            GpuUsageMethod::BusyFlag => gpu.poll_and_get_load(config.sampling_interval)?,
-            GpuUsageMethod::Process => gpu.poll_and_get_load_from_process()?,
-        };
+        let average_load: f32;
+        let burst_length: u32;
 
-        if let Some(fix) = gpu_usage_fix.as_mut(){
+        (average_load, burst_length) = gpu.poll_and_get_load(config.sampling_interval)?;
+
+        if let Some(fix) = gpu_usage_fix.as_mut() {
             if let Err(e) = fix.set_usage_percent(average_load * 100.0) {
                 eprintln!("GPU usage metrics fix write failed: {e}");
             }
@@ -139,10 +136,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             curr_freq = target_freq;
         }
 
-        let sleep_duration = match config.gpu_usage_method {
-            GpuUsageMethod::BusyFlag => config.adjustment_interval - 65 * config.sampling_interval,
-            GpuUsageMethod::Process => config.adjustment_interval,
-        };
-        std::thread::sleep(sleep_duration);
+        let elapsed = loop_start.elapsed();
+        if elapsed < config.adjustment_interval {
+            std::thread::sleep(config.adjustment_interval - elapsed);
+        }
     }
 }

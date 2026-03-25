@@ -1,16 +1,16 @@
-mod transport;
-mod mailbox;
+mod api;
 mod codec;
 mod error;
-mod api;
+mod mailbox;
+mod transport;
 
-pub use error::{SmuError, Result};
-pub use codec::{mv_to_vid, vid_to_mv, pack_u32,decode_u32, pack_s16, pack_f32,};
+pub use codec::{decode_u32, mv_to_vid, pack_f32, pack_s16, pack_u32, vid_to_mv};
+pub use error::{Result, SmuError};
 
+use mailbox::{Bc250Mailbox, SmuStatus};
 use std::collections::HashMap;
 use std::sync::Arc;
 use transport::Bc250PciTransport;
-use mailbox::{Bc250Mailbox, SmuStatus};
 
 const DEFAULT_QUEUE_ADDRS: [(u8, (u32, u32, u32)); 5] = [
     (0, (0x03B10A08, 0x03B10A68, 0x03B10A48)),
@@ -27,26 +27,15 @@ pub struct Bc250Smu {
     queues: HashMap<u8, Bc250Mailbox>,
 }
 
-
-
-
 impl Bc250Smu {
-    pub fn new(
-        bdf: &str,
-        allow_queue0: bool,
-        use_flock: bool,
-        timeout: u32,
-    ) -> Result<Self> {
+    pub fn new(bdf: &str, allow_queue0: bool, use_flock: bool, timeout: u32) -> Result<Self> {
         let mut transport = Bc250PciTransport::new(bdf, use_flock);
         transport.open()?;
         let transport = Arc::new(transport);
 
         let mut queues = HashMap::new();
         for (queue, (cmd, rsp, arg)) in DEFAULT_QUEUE_ADDRS {
-            queues.insert(
-                queue,
-                Bc250Mailbox::new(&transport, cmd, rsp, arg, timeout),
-            );
+            queues.insert(queue, Bc250Mailbox::new(&transport, cmd, rsp, arg, timeout));
         }
 
         Ok(Self {
@@ -73,7 +62,13 @@ impl Bc250Smu {
             .ok_or(SmuError::QueueNotConfigured(queue))
     }
 
-    pub fn raw_send(&self, queue: u8, msg_id: u32, arg: u32, arg_high: Option<u32>) -> Result<SmuStatus> {
+    pub fn raw_send(
+        &self,
+        queue: u8,
+        msg_id: u32,
+        arg: u32,
+        arg_high: Option<u32>,
+    ) -> Result<SmuStatus> {
         self.guard_queue(queue)?;
         self.get_queue(queue)?.send(msg_id, arg, arg_high)
     }
@@ -117,33 +112,26 @@ impl Bc250Smu {
         }
     }
 
-        /// Send test message and verify the response increments the value
-    /// 
+    /// Send test message and verify the response increments the value
+    ///
     /// This sends a value to the SMU and expects it to return value + 1.
     /// Useful for verifying that SMU communication is working correctly.
     pub fn test_message(&self, value: u32) -> Result<bool> {
-        let response = self.send_message(
-            3,
-            0x01,
-            value,
-            None,
-            Some(pack_u32),
-            Some(decode_u32),
-            true,
-        )?;
-        
+        let response =
+            self.send_message(3, 0x01, value, None, Some(pack_u32), Some(decode_u32), true)?;
+
         if response != value + 1 {
             return Err(crate::error::SmuError::TestMessageFailed {
                 expected: value + 1,
                 actual: response,
             });
         }
-        
+
         Ok(true)
     }
 
     /// Check test message using value 123 (convenience wrapper)
-    /// 
+    ///
     /// This is a quick way to verify SMU communication is working.
     /// Returns true if the SMU correctly responds with 124.
     pub fn check_test_message(&self) -> Result<bool> {

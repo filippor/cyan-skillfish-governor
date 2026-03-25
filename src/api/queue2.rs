@@ -1,5 +1,5 @@
-use crate::{Bc250Smu, Result};
 use crate::codec::{decode_u32, pack_u32};
+use crate::{Bc250Smu, Result};
 
 impl Bc250Smu {
     // Queue 2 methods - Device information and feature control
@@ -9,22 +9,29 @@ impl Bc250Smu {
     }
 
     pub fn get_device_name_chunk(&self, index: u8) -> Result<u32> {
-        self.send_message(2, 0x04, index as u32, None, Some(pack_u32), Some(decode_u32), true)
+        self.send_message(
+            2,
+            0x04,
+            index as u32,
+            None,
+            Some(pack_u32),
+            Some(decode_u32),
+            true,
+        )
     }
 
     pub fn get_device_name(&self) -> Result<String> {
         let mut bytes = Vec::with_capacity(48);
-        
+
         for i in 0..12 {
             let chunk = self.get_device_name_chunk(i)?;
             bytes.extend_from_slice(&chunk.to_le_bytes());
         }
-        
+
         let end = bytes.iter().position(|&b| b == 0).unwrap_or(bytes.len());
-        String::from_utf8(bytes[..end].to_vec())
-            .map_err(|e| crate::error::SmuError::Io(
-                std::io::Error::new(std::io::ErrorKind::InvalidData, e)
-            ))
+        String::from_utf8(bytes[..end].to_vec()).map_err(|e| {
+            crate::error::SmuError::Io(std::io::Error::new(std::io::ErrorKind::InvalidData, e))
+        })
     }
 
     pub fn enable_smu_features(&self, mask_low: u32, mask_high: Option<u32>) -> Result<()> {

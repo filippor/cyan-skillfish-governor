@@ -1,9 +1,9 @@
-use crate::{Bc250Smu, Result};
 use crate::codec::pack_u32;
+use crate::{Bc250Smu, Result};
 
 impl Bc250Smu {
     // Queue 4 methods - Mostly undocumented functionality
-    
+
     /// Queue 4 message 0x04 (functionality unknown)
     pub fn q4_msg_0x04(&self) -> Result<u32> {
         self.send_message(4, 0x04, 0, None, None, None, true)

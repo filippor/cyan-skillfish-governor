@@ -1,5 +1,5 @@
+use crate::codec::{decode_u32, mv_to_vid, pack_f32, pack_s16, pack_u32};
 use crate::{Bc250Smu, Result};
-use crate::codec::{decode_u32, pack_u32, pack_s16, pack_f32, mv_to_vid};
 
 impl Bc250Smu {
     // Queue 3 methods - Advanced control and monitoring
@@ -165,7 +165,15 @@ impl Bc250Smu {
     }
 
     pub fn get_cpu_gpu_vid_offset(&self, selector: u8) -> Result<u32> {
-        self.send_message(3, 0x30, selector as u32, None, Some(pack_u32), Some(decode_u32), true)
+        self.send_message(
+            3,
+            0x30,
+            selector as u32,
+            None,
+            Some(pack_u32),
+            Some(decode_u32),
+            true,
+        )
     }
 
     /// Return DAT 00015778 (functionality unknown)
@@ -197,7 +205,15 @@ impl Bc250Smu {
     }
 
     pub fn get_clk_assigned_to_p_state(&self, pstate: u8) -> Result<u32> {
-        self.send_message(3, 0x3B, pstate as u32, None, Some(pack_u32), Some(decode_u32), true)
+        self.send_message(
+            3,
+            0x3B,
+            pstate as u32,
+            None,
+            Some(pack_u32),
+            Some(decode_u32),
+            true,
+        )
     }
 
     /// Enable SMU features (Queue 3 variant)
@@ -227,7 +243,15 @@ impl Bc250Smu {
     }
 
     pub fn get_core_freq(&self, core_id: u8) -> Result<u32> {
-        self.send_message(3, 0x43, core_id as u32, None, Some(pack_u32), Some(decode_u32), true)
+        self.send_message(
+            3,
+            0x43,
+            core_id as u32,
+            None,
+            Some(pack_u32),
+            Some(decode_u32),
+            true,
+        )
     }
 
     /// Return status 0xFE
@@ -242,12 +266,10 @@ impl Bc250Smu {
 
     pub fn set_cpu_vid_offset(&self, offset: i8) -> Result<()> {
         if offset < -5 || offset > 5 {
-            return Err(crate::error::SmuError::Io(
-                std::io::Error::new(
-                    std::io::ErrorKind::InvalidInput,
-                    "Offset must be in range -5 to 5"
-                )
-            ));
+            return Err(crate::error::SmuError::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "Offset must be in range -5 to 5",
+            )));
         }
         self.send_message(3, 0x49, offset as u32, None, Some(pack_u32), None, true)?;
         Ok(())
@@ -255,12 +277,10 @@ impl Bc250Smu {
 
     pub fn set_gfx_vid_offset(&self, offset: i8) -> Result<()> {
         if offset < -5 || offset > 5 {
-            return Err(crate::error::SmuError::Io(
-                std::io::Error::new(
-                    std::io::ErrorKind::InvalidInput,
-                    "Offset must be in range -5 to 5"
-                )
-            ));
+            return Err(crate::error::SmuError::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "Offset must be in range -5 to 5",
+            )));
         }
         self.send_message(3, 0x4A, offset as u32, None, Some(pack_u32), None, true)?;
         Ok(())
