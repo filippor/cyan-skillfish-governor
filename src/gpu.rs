@@ -16,6 +16,8 @@ pub struct GPU {
     dev_handle: DeviceHandle,
     samples: u64,
     process_prev_gfx_time: Option<u64>,
+    process_prew_time: Option<std::time::Instant>,
+    process_fdinfo_pdev: String,
     pub min_freq: u32,
     pub max_freq: u32,
 
@@ -43,7 +45,11 @@ impl GPU {
         let (dev_handle, _, _) =
             DeviceHandle::init(card.as_raw_fd()).map_err(IoError::from_raw_os_error)?;
 
-       
+        let process_fdinfo_pdev = format!(
+            "{:04x}:{:02x}:{:02x}.{}",
+            location.domain, location.bus, location.dev, location.func
+        );
+
         let  min_freq = *safe_points.first_key_value().unwrap().0;
         let max_freq = *safe_points.last_key_value().unwrap().0;
        
@@ -57,6 +63,8 @@ impl GPU {
             dev_handle,
             samples: 0,
             process_prev_gfx_time: None,
+            process_prew_time: None,
+            process_fdinfo_pdev,
             min_freq,
             max_freq,
             smu,
@@ -85,13 +93,19 @@ impl GPU {
     }
 
     pub fn poll_and_get_load_from_process(&mut self) -> Result<(f32, u32), IoError> {
-        let now = get_total_gfx_time_from_fdinfo();
-        let prev = self.process_prev_gfx_time.replace(now).unwrap_or(now);
-        let delta = now.saturating_sub(prev);
-
-        let usage01 = ((delta as f32) / 1_000_000_000.0).clamp(0.0, 1.0);
-
-        Ok((usage01, 0))
+        let current_gfx_time = get_total_gfx_time_from_fdinfo(&self.process_fdinfo_pdev);
+        let current_time = std::time::Instant::now();
+        // First call: seed state and return 0 — no previous sample to diff against.
+        let Some(prev_gfx_time) = self.process_prev_gfx_time.replace(current_gfx_time) else {
+            self.process_prew_time = Some(current_time);
+            return Ok((0.0, 0));
+        };
+        let prev_time = self.process_prew_time.replace(current_time).unwrap_or(current_time);
+        let delta_gfx_time = current_gfx_time.saturating_sub(prev_gfx_time);
+        let delta_time_ns = current_time.duration_since(prev_time).as_nanos() as u64;
+        let usage = ((delta_gfx_time as f64) / (delta_time_ns as f64)).clamp(0.0, 1.0) as f32;
+    
+        Ok((usage, 0))
     }
 
     pub fn read_temperature(&mut self) -> Result<u32, IoError> {
@@ -122,7 +136,7 @@ impl GPU {
     }
 }
 
-fn get_total_gfx_time_from_fdinfo() -> u64 {
+fn get_total_gfx_time_from_fdinfo(target_pdev: &str) -> u64 {
     let mut gfx_times: HashMap<u32, u64> = HashMap::new();
 
     let proc_entries = match fs::read_dir("/proc") {
@@ -150,22 +164,45 @@ fn get_total_gfx_time_from_fdinfo() -> u64 {
             };
 
             let mut cid: Option<u32> = None;
-            let mut gfx: u64 = 0;
+            let mut pdev: Option<&str> = None;
+            let mut engine_total: u64 = 0;
 
             for line in content.lines() {
                 if let Some(v) = line.strip_prefix("drm-client-id:") {
                     cid = v.trim().parse::<u32>().ok();
-                } else if let Some(v) = line.strip_prefix("drm-engine-gfx:") {
-                    if let Some(tok) = v.split_whitespace().next() {
-                        gfx = tok.parse::<u64>().unwrap_or(0);
-                    }
+                    continue;
                 }
+                if let Some(v) = line.strip_prefix("drm-pdev:") {
+                    pdev = Some(v.trim());
+                    continue;
+                }
+                if let Some((_, rest)) = line
+                    .strip_prefix("drm-engine-")
+                    .and_then(|v| v.split_once(':'))
+                {
+                    let mut fields = rest.split_whitespace();
+                    let Some(value_tok) = fields.next() else {
+                        continue;
+                    };
+                    // Skip non-time drm-engine fields by requiring ns unit.
+                    if fields.next() != Some("ns") {
+                        continue;
+                    }
+                    let value = value_tok.parse::<u64>().unwrap_or(0);
+                    engine_total = engine_total.saturating_add(value);
+                }
+            }
+
+            if let Some(pdev) = pdev
+                && pdev != target_pdev
+            {
+                continue;
             }
 
             if let Some(cid) = cid {
                 let e = gfx_times.entry(cid).or_insert(0);
-                if gfx > *e {
-                    *e = gfx;
+                if engine_total > *e {
+                    *e = engine_total;
                 }
             }
         }

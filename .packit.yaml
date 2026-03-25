@@ -15,7 +15,6 @@ jobs:
   trigger: commit
   branch: smu
   owner: filippor
-  project: bazzite
   targets:
     - fedora-stable
     - fedora-development
