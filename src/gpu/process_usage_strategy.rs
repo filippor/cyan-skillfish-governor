@@ -1,11 +1,10 @@
 use super::UsageStrategy;
-use libdrm_amdgpu_sys::AMDGPU::DeviceHandle;
 use std::{
     collections::HashSet,
     fs,
     io::Error as IoError,
     path::{Path, PathBuf},
-    time::{Duration, Instant},
+    time::Instant,
 };
 
 pub(super) struct ProcessUsageStrategy {
@@ -113,12 +112,7 @@ fn get_total_gfx_time_from_fdinfo(render_node_path: &Path) -> u64 {
 }
 
 impl UsageStrategy for ProcessUsageStrategy {
-    fn poll_and_get_load(
-        &mut self,
-        _dev_handle: &DeviceHandle,
-        _process_fdinfo_pdev: &str,
-        _sampling_interval: Duration,
-    ) -> Result<(f32, u32), IoError> {
+    fn poll_and_get_load(&mut self) -> Result<(f32, u32), IoError> {
         let current_gfx_time = get_total_gfx_time_from_fdinfo(&self.render_node_path);
         let current_time = Instant::now();
 

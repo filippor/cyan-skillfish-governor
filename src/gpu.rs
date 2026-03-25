@@ -6,7 +6,7 @@ use std::{
     fs::File,
     io::Error as IoError,
     os::fd::AsRawFd,
-    path::PathBuf,
+    sync::Arc,
     time::Duration,
 };
 
@@ -37,24 +37,20 @@ trait FreqStrategy {
 }
 
 trait UsageStrategy {
-    fn poll_and_get_load(
-        &mut self,
-        dev_handle: &DeviceHandle,
-        process_fdinfo_pdev: &str,
-        sampling_interval: Duration,
-    ) -> Result<(f32, u32), IoError>;
+    fn poll_and_get_load(&mut self) -> Result<(f32, u32), IoError>;
 }
 
 struct SmuFreqStrategy {
     smu: Bc250Smu,
 }
 struct BusyFlagUsageStrategy {
+    dev_handle: Arc<DeviceHandle>,
     samples: u64,
+    sampling_interval: Duration,
 }
 
 pub struct GPU {
-    dev_handle: DeviceHandle,
-    process_fdinfo_pdev: String,
+    dev_handle: Arc<DeviceHandle>,
     pub min_freq: u32,
     pub max_freq: u32,
     freq_strategy: Box<dyn FreqStrategy>,
@@ -67,6 +63,7 @@ impl GPU {
         safe_points: BTreeMap<u32, u32>,
         gpu_set_method: GpuSetMethod,
         gpu_usage_method: GpuUsageMethod,
+        sampling_interval: Duration,
     ) -> Result<GPU, Box<dyn std::error::Error>> {
         let location = BUS_INFO {
             domain: 0,
@@ -82,19 +79,15 @@ impl GPU {
                 "Cyan Skillfish GPU not found at expected PCI bus location",
             ))?;
         }
-        let render_path: PathBuf = location.get_drm_render_path()?;
+        let render_path = location.get_drm_render_path()?;
         let card = File::open(&render_path)?;
         let (dev_handle, _, _) = DeviceHandle::init(card.as_raw_fd())
             .map_err(|e| IoError::other(format!("DeviceHandle::init failed: {e}")))?;
+        let dev_handle = Arc::new(dev_handle);
 
         let gpu_sysfs_path = dev_handle
             .get_sysfs_path()
             .map_err(|e| IoError::other(format!("get_sysfs_path failed: {e}")))?;
-
-        let process_fdinfo_pdev = format!(
-            "{:04x}:{:02x}:{:02x}.{}",
-            location.domain, location.bus, location.dev, location.func
-        );
 
         let freq_strategy: Box<dyn FreqStrategy> = match gpu_set_method {
             GpuSetMethod::Smu => Box::new(SmuFreqStrategy::new()?),
@@ -106,7 +99,13 @@ impl GPU {
         let max_freq = *safe_points.last_key_value().unwrap().0;
 
         let usage_strategy: Box<dyn UsageStrategy> = match gpu_usage_method {
-            GpuUsageMethod::BusyFlag => Box::new(BusyFlagUsageStrategy { samples: 0 }),
+            GpuUsageMethod::BusyFlag => {
+                Box::new(BusyFlagUsageStrategy {
+                    dev_handle: Arc::clone(&dev_handle),
+                    samples: 0,
+                    sampling_interval,
+                })
+            }
             GpuUsageMethod::Process => Box::new(ProcessUsageStrategy {
                 render_node_path: render_path,
                 prev_gfx_time: None,
@@ -116,7 +115,6 @@ impl GPU {
 
         Ok(GPU {
             dev_handle,
-            process_fdinfo_pdev,
             min_freq,
             max_freq,
             freq_strategy,
@@ -125,15 +123,8 @@ impl GPU {
         })
     }
 
-    pub fn poll_and_get_load(
-        &mut self,
-        sampling_interval: Duration,
-    ) -> Result<(f32, u32), IoError> {
-        self.usage_strategy.poll_and_get_load(
-            &self.dev_handle,
-            &self.process_fdinfo_pdev,
-            sampling_interval,
-        )
+    pub fn poll_and_get_load(&mut self) -> Result<(f32, u32), IoError> {
+        self.usage_strategy.poll_and_get_load()
     }
 
     pub fn read_temperature(&mut self) -> Result<u32, IoError> {
@@ -197,14 +188,10 @@ impl FreqStrategy for SmuFreqStrategy {
 }
 
 impl UsageStrategy for BusyFlagUsageStrategy {
-    fn poll_and_get_load(
-        &mut self,
-        dev_handle: &DeviceHandle,
-        _process_fdinfo_pdev: &str,
-        sampling_interval: Duration,
-    ) -> Result<(f32, u32), IoError> {
+    fn poll_and_get_load(&mut self) -> Result<(f32, u32), IoError> {
         for _ in 0..65 {
-            let res = dev_handle
+            let res = self
+                .dev_handle
                 .read_mm_registers(GRBM_STATUS_REG)
                 .map_err(IoError::from_raw_os_error)?;
             let gpu_busy = (res & (1 << GPU_ACTIVE_BIT)) > 0;
@@ -213,7 +200,7 @@ impl UsageStrategy for BusyFlagUsageStrategy {
             if gpu_busy {
                 self.samples |= 1;
             }
-            std::thread::sleep(sampling_interval);
+            std::thread::sleep(self.sampling_interval);
         }
 
         let average_load = (self.samples.count_ones() as f32) / 64.0;

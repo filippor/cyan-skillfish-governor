@@ -60,6 +60,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         config.safe_points,
         config.gpu_set_method,
         config.gpu_usage_method,
+        config.sampling_interval,
     )?;
 
     let mut curr_freq: u32 = gpu.get_freq()?;
@@ -81,7 +82,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let average_load: f32;
         let burst_length: u32;
 
-        (average_load, burst_length) = gpu.poll_and_get_load(config.sampling_interval)?;
+        (average_load, burst_length) = gpu.poll_and_get_load()?;
 
         if let Some(fix) = gpu_usage_fix.as_mut() {
             usage_fix_cycle = usage_fix_cycle.saturating_add(1);
