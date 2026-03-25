@@ -35,6 +35,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         None
     };
 
+    let mut usage_fix_cycle: u32 = 0;
+
     println!(
         "GPU usage method configured: {}",
         config.gpu_usage_method.as_config_value()
@@ -60,7 +62,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let burst_freq_step =
         (config.ramp_rate_burst * config.adjustment_interval.as_millis() as f32) as u32;
     let freq_step = (config.ramp_rate * config.adjustment_interval.as_millis() as f32) as u32;
+
     println!("freq min {} max {} ", gpu.min_freq, max_freq);
+
     loop {
         let loop_start = std::time::Instant::now();
 
@@ -70,14 +74,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         (average_load, burst_length) = gpu.poll_and_get_load(config.sampling_interval)?;
 
         if let Some(fix) = gpu_usage_fix.as_mut() {
-            if let Err(e) = fix.set_usage_percent(average_load * 100.0) {
-                eprintln!("GPU usage metrics fix write failed: {e}");
+            usage_fix_cycle = usage_fix_cycle.saturating_add(1);
+            if usage_fix_cycle >= config.gpu_metric_fix_flush_every {
+                usage_fix_cycle = 0;
+                if let Err(e) = fix.set_usage_percent(average_load * 100.0) {
+                    eprintln!("GPU usage metrics fix write failed: {e}");
+                }
             }
         }
 
-        let burst = config
-            .burst_samples
-            .map_or(false, |burst_samples| burst_length >= burst_samples);
+        let burst = average_load >= 0.99
+            || config
+                .burst_samples
+                .map_or(false, |burst_samples| burst_length >= burst_samples);
 
         //Temperature Management
         let temp = gpu.read_temperature()?;

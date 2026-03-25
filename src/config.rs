@@ -49,6 +49,7 @@ pub struct Config {
     pub throttling_recovery_temp: Option<u32>,
     pub safe_points: BTreeMap<u32, u32>,
     pub gpu_metric_fix: bool,
+    pub gpu_metric_fix_flush_every: u32,
     pub gpu_usage_method: GpuUsageMethod,
     pub gpu_set_method: GpuSetMethod,
 }
@@ -446,29 +447,32 @@ impl Config {
             .ok_or("is missing")
             .and_then(|v| v.as_bool().ok_or("must be a boolean"))
             .unwrap_or_else(|s| {
-                // Backward-compatible fallback for existing top-level configs.
-                if let Some(value) = config.get("gpu-metric-fix") {
-                    match value.as_bool() {
-                        Some(v) => {
-                            println!(
-                                "gpu-metric-fix is deprecated, use gpu-usage.fix-metrics instead"
-                            );
-                            v
-                        }
-                        _ => {
-                            println!(
-                                "gpu-usage.fix-metrics {s}; gpu-metric-fix must be a boolean, replaced with the default value of true"
-                            );
-                            true
-                        }
-                    }
-                } else {
-                    println!(
-                        "gpu-usage.fix-metrics {s}, replaced with the default value of true"
-                    );
-                    true
-                }
+                println!("gpu-usage.fix-metrics {s}, replaced with the default value of true");
+                true
             });
+
+        let gpu_metric_fix_flush_every = match gpu_usage
+            .and_then(|t| {
+                t.get("flush-every")
+                    .or_else(|| t.get("flush_every"))
+                    .or_else(|| t.get("flush-every-cycles"))
+            })
+            .ok_or("is missing")
+            .and_then(|v| v.as_integer().ok_or("must be an integer"))
+        {
+            Ok(v) if (1..=i64::from(u32::MAX)).contains(&v) => v as u32,
+            Ok(_) => {
+                println!(
+                    "gpu-usage.flush-every cannot be greater than {} or lower than 1, replaced with the default value of 10",
+                    u32::MAX
+                );
+                10
+            }
+            Err(s) => {
+                println!("gpu-usage.flush-every {s}, replaced with the default value of 10");
+                10
+            }
+        };
 
         let gpu_usage_method = match gpu_usage
             .and_then(|t| t.get("method"))
@@ -514,6 +518,7 @@ impl Config {
             throttling_recovery_temp,
             safe_points,
             gpu_metric_fix,
+            gpu_metric_fix_flush_every,
             gpu_usage_method,
             gpu_set_method,
         })

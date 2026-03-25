@@ -6,6 +6,7 @@ adjust = 200_000
 [gpu-usage]
 fix-metrics = true
 method = "busy-flag"
+flush-every = 10
 
 [gpu]
 set-method = "smu"  # "smu" or "kernel"

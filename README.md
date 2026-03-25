@@ -10,6 +10,7 @@ Keys are:
 * `gpu-usage`
   * `fix-metrics` : boolean default true fix gpu usage metrics
   * `method` : 'process' or 'busy-flag' default 'busy-flag' choose the method to get the gpu usage sample busy-flag or total time from process
+  * `flush-every` : integer default 10 flush patched gpu metrics to disk every N update cycles
 * `gpu`
   * `set-method`: 'smu' or 'kernel' default 'smu' choose the frequency/voltage control backend
 * `timing`
