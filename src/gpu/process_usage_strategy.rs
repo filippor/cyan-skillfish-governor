@@ -1,19 +1,22 @@
 use super::UsageStrategy;
 use libdrm_amdgpu_sys::AMDGPU::DeviceHandle;
 use std::{
-    collections::HashMap,
+    collections::HashSet,
     fs,
     io::Error as IoError,
+    path::{Path, PathBuf},
     time::{Duration, Instant},
 };
 
 pub(super) struct ProcessUsageStrategy {
+    pub(super) render_node_path: PathBuf,
     pub(super) prev_gfx_time: Option<u64>,
     pub(super) prev_time: Option<Instant>,
 }
 
-fn get_total_gfx_time_from_fdinfo(target_pdev: &str) -> u64 {
-    let mut gfx_times: HashMap<u32, u64> = HashMap::new();
+fn get_total_gfx_time_from_fdinfo(render_node_path: &Path) -> u64 {
+    let mut seen_cids: HashSet<u32> = HashSet::new();
+    let mut total_engine_time: u64 = 0;
 
     let proc_entries = match fs::read_dir("/proc") {
         Ok(v) => v,
@@ -27,6 +30,27 @@ fn get_total_gfx_time_from_fdinfo(target_pdev: &str) -> u64 {
             continue;
         }
 
+        // Collect fd numbers whose symlink points exactly to our render node.
+        let fd_dir = proc_entry.path().join("fd");
+        let gpu_fds: HashSet<u64> = fs::read_dir(&fd_dir)
+            .map(|rd| {
+                rd.flatten()
+                    .filter_map(|e| {
+                        let target = fs::read_link(e.path()).ok()?;
+                        if target == render_node_path {
+                            e.file_name().to_string_lossy().parse::<u64>().ok()
+                        } else {
+                            None
+                        }
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        if gpu_fds.is_empty() {
+            continue;
+        }
+
         let fdinfo_dir = proc_entry.path().join("fdinfo");
         let fdinfos = match fs::read_dir(fdinfo_dir) {
             Ok(v) => v,
@@ -34,67 +58,68 @@ fn get_total_gfx_time_from_fdinfo(target_pdev: &str) -> u64 {
         };
 
         for fdinfo in fdinfos.flatten() {
+            let fd_num = fdinfo
+                .file_name()
+                .to_string_lossy()
+                .parse::<u64>()
+                .unwrap_or(u64::MAX);
+            if !gpu_fds.contains(&fd_num) {
+                continue;
+            }
+
             let content = match fs::read_to_string(fdinfo.path()) {
                 Ok(c) => c,
                 Err(_) => continue,
             };
 
-            let mut cid: Option<u32> = None;
-            let mut pdev: Option<&str> = None;
-            let mut engine_total: u64 = 0;
-
-            for line in content.lines() {
-                if let Some(v) = line.strip_prefix("drm-client-id:") {
-                    cid = v.trim().parse::<u32>().ok();
-                    continue;
-                }
-                if let Some(v) = line.strip_prefix("drm-pdev:") {
-                    pdev = Some(v.trim());
-                    continue;
-                }
-                if let Some((_, rest)) = line
-                    .strip_prefix("drm-engine-")
-                    .and_then(|v| v.split_once(':'))
-                {
-                    let mut fields = rest.split_whitespace();
-                    let Some(value_tok) = fields.next() else {
-                        continue;
-                    };
-                    // Skip non-time drm-engine fields by requiring ns unit.
-                    if fields.next() != Some("ns") {
-                        continue;
-                    }
-                    let value = value_tok.parse::<u64>().unwrap_or(0);
-                    engine_total = engine_total.saturating_add(value);
-                }
-            }
-
-            if let Some(pdev) = pdev
-                && pdev != target_pdev
-            {
+            // Skip header lines before drm-client-id.
+            let mut lines = content.lines().skip_while(|l| !l.starts_with("drm-client-id"));
+            let Some(cid_line) = lines.next() else {
+                continue;
+            };
+            let Some(cid) = cid_line
+                .strip_prefix("drm-client-id:")
+                .and_then(|v| v.trim().parse::<u32>().ok())
+            else {
+                continue;
+            };
+            // Skip contexts already counted (shared across processes).
+            if !seen_cids.insert(cid) {
                 continue;
             }
 
-            if let Some(cid) = cid {
-                let e = gfx_times.entry(cid).or_insert(0);
-                if engine_total > *e {
-                    *e = engine_total;
+            let mut engine_total: u64 = 0;
+            for line in lines {
+                let Some((_, rest)) = line
+                    .strip_prefix("drm-engine-")
+                    .and_then(|v| v.split_once(':'))
+                else {
+                    continue;
+                };
+                let mut fields = rest.split_whitespace();
+                let Some(value_tok) = fields.next() else {
+                    continue;
+                };
+                if fields.next() != Some("ns") {
+                    continue;
                 }
+                engine_total = engine_total.saturating_add(value_tok.parse::<u64>().unwrap_or(0));
             }
+            total_engine_time = total_engine_time.saturating_add(engine_total);
         }
     }
 
-    gfx_times.values().copied().sum()
+    total_engine_time
 }
 
 impl UsageStrategy for ProcessUsageStrategy {
     fn poll_and_get_load(
         &mut self,
         _dev_handle: &DeviceHandle,
-        process_fdinfo_pdev: &str,
+        _process_fdinfo_pdev: &str,
         _sampling_interval: Duration,
     ) -> Result<(f32, u32), IoError> {
-        let current_gfx_time = get_total_gfx_time_from_fdinfo(process_fdinfo_pdev);
+        let current_gfx_time = get_total_gfx_time_from_fdinfo(&self.render_node_path);
         let current_time = Instant::now();
 
         let Some(prev_gfx_time) = self.prev_gfx_time.replace(current_gfx_time) else {

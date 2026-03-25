@@ -1,7 +1,14 @@
 use crate::config::{GpuSetMethod, GpuUsageMethod};
 use cyan_skillfish_governor_smu::Bc250Smu;
 use libdrm_amdgpu_sys::{AMDGPU::DeviceHandle, PCI::BUS_INFO};
-use std::{collections::BTreeMap, fs::File, io::Error as IoError, os::fd::AsRawFd, time::Duration};
+use std::{
+    collections::BTreeMap,
+    fs::File,
+    io::Error as IoError,
+    os::fd::AsRawFd,
+    path::PathBuf,
+    time::Duration,
+};
 
 #[path = "gpu/kernel_freq_strategy.rs"]
 mod kernel_freq_strategy;
@@ -75,7 +82,8 @@ impl GPU {
                 "Cyan Skillfish GPU not found at expected PCI bus location",
             ))?;
         }
-        let card = File::open(location.get_drm_render_path()?)?;
+        let render_path: PathBuf = location.get_drm_render_path()?;
+        let card = File::open(&render_path)?;
         let (dev_handle, _, _) = DeviceHandle::init(card.as_raw_fd())
             .map_err(|e| IoError::other(format!("DeviceHandle::init failed: {e}")))?;
 
@@ -100,6 +108,7 @@ impl GPU {
         let usage_strategy: Box<dyn UsageStrategy> = match gpu_usage_method {
             GpuUsageMethod::BusyFlag => Box::new(BusyFlagUsageStrategy { samples: 0 }),
             GpuUsageMethod::Process => Box::new(ProcessUsageStrategy {
+                render_node_path: render_path,
                 prev_gfx_time: None,
                 prev_time: None,
             }),
