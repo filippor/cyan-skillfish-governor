@@ -28,6 +28,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .unwrap_or(Ok("".to_string())),
     )?;
 
+    let gpu_usage_method = match config.gpu_usage_method {
+        GpuUsageMethod::BusyFlag => "busy_flag",
+        GpuUsageMethod::Process => "process",
+    };
+    println!("GPU usage method configured: {gpu_usage_method}");
+
     let mut gpu_usage_fix = if config.gpu_metric_fix {
         match GpuUsageFix::start() {
             Ok(fix) => {
