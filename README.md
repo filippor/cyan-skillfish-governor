@@ -27,11 +27,11 @@ Keys are:
 * `load-target`: as a fraction
   * `upper`: GPU load above which target frequency is increased
   * `lower`: GPU load below which target frequency is decreased
-* `temmperature` in °C
+* `temperature` in °C
   * `throttling` if temperature is greather  start reducing max frequency
   * `throttling_recovery` if temperaure is lower restore max frequency
 * `safe-points`: known safe/stable power points, array of tables with two keys:
   * `frequency`: GPU frequency in MHz
   * `voltage`: GPU supply voltage in mV
 
-See also `default-config.toml`.
+See also [default-config.toml](default-config.toml).
