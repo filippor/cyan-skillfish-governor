@@ -161,6 +161,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
     println!("Shutting down gracefully...");
+    if let Some(fix) = gpu_usage_fix.as_mut()
+        && let Err(e) = fix.shutdown()
+    {
+        eprintln!("GPU usage metrics fix cleanup failed: {e}");
+    }
     if let Err(e) = gpu.shutdown() {
         eprintln!("System exit restore failed: {e}");
     }

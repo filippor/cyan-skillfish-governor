@@ -347,6 +347,23 @@ impl FreqStrategy for KernelFreqStrategy {
             return Ok(safe_points);
         };
 
+        let vddc_limits = content.lines().find_map(|line| {
+            let rest = line.trim().strip_prefix("VDDC:")?;
+            let mut vals = rest.split_whitespace().filter_map(|t| {
+                t.strip_suffix("mV")
+                    .or_else(|| t.strip_suffix("mv"))?
+                    .parse::<u32>()
+                    .ok()
+            });
+            Some((vals.next()?, vals.next()?))
+        });
+
+        if vddc_limits.is_none() {
+            eprintln!(
+                "warning: VDDC limits not found in pp_od_clk_voltage, skipping voltage clamp"
+            );
+        }
+
         Ok(safe_points.into_iter().fold(BTreeMap::new(), |mut acc, (freq, vol)| {
             let clamped_freq = freq.clamp(sclk_min, sclk_max);
             if clamped_freq != freq {
@@ -356,14 +373,27 @@ impl FreqStrategy for KernelFreqStrategy {
                 );
             }
 
+            let clamped_vol = if let Some((vddc_min, vddc_max)) = vddc_limits {
+                let clamped = vol.clamp(vddc_min, vddc_max);
+                if clamped != vol {
+                    eprintln!(
+                        "warning: clamping safe point voltage {}mV -> {}mV (VDDC range {}-{}mV)",
+                        vol, clamped, vddc_min, vddc_max
+                    );
+                }
+                clamped
+            } else {
+                vol
+            };
+
             match acc.get_mut(&clamped_freq) {
                 Some(existing_vol) => {
-                    if vol > *existing_vol {
-                        *existing_vol = vol;
+                    if clamped_vol > *existing_vol {
+                        *existing_vol = clamped_vol;
                     }
                 }
                 None => {
-                    acc.insert(clamped_freq, vol);
+                    acc.insert(clamped_freq, clamped_vol);
                 }
             }
 

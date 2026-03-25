@@ -64,11 +64,9 @@ impl GpuUsageFix {
 
         Ok(())
     }
-}
 
-impl Drop for GpuUsageFix {
-    fn drop(&mut self) {
-        let _ = umount_bind(REAL_METRICS);
+    pub fn shutdown(&mut self) -> io::Result<()> {
+        umount_bind(REAL_METRICS)
     }
 }
 

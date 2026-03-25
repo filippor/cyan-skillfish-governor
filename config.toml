@@ -9,7 +9,7 @@ method = "process" # "busy-flag" or "process"
 flush-every = 10
 
 [gpu]
-set-method = "smu"  # "smu" or "kernel"
+set-method = "kernel"  # "smu" or "kernel"
 
 # MHz/ms
 [timing.ramp-rates]
