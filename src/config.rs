@@ -409,16 +409,44 @@ impl Config
             None
         };
 
-        let gpu_metric_fix = config
-            .get("gpu-metric-fix")
+        let gpu_usage = config
+            .get("gpu-usage")
+            .or_else(|| config.get("gpu_usage"))
+            .and_then(|t| t.as_table());
+
+        let gpu_metric_fix = gpu_usage
+            .and_then(|t| {
+                t.get("fix-metrics")
+                    .or_else(|| t.get("fix-metric"))
+                    .or_else(|| t.get("fix_metric"))
+            })
             .ok_or("is missing")
             .and_then(|v| v.as_bool().ok_or("must be a boolean"))
             .unwrap_or_else(|s| {
-                println!("gpu-metric-fix {s}, replaced with the default value of true");
-                true
+                // Backward-compatible fallback for existing top-level configs.
+                if let Some(value) = config.get("gpu-metric-fix") {
+                    match value.as_bool() {
+                        Some(v) => {
+                            println!(
+                                "gpu-metric-fix is deprecated, use gpu-usage.fix-metrics instead"
+                            );
+                            v
+                        }
+                        None => {
+                            println!(
+                                "gpu-usage.fix-metrics {s}; gpu-metric-fix must be a boolean, replaced with the default value of true"
+                            );
+                            true
+                        }
+                    }
+                } else {
+                    println!(
+                        "gpu-usage.fix-metrics {s}, replaced with the default value of true"
+                    );
+                    true
+                }
             });
 
-        let gpu_usage = config.get("gpu-usage").and_then(|t| t.as_table());
         let gpu_usage_method = match gpu_usage
             .and_then(|t| t.get("method"))
             .and_then(|v| v.as_str())

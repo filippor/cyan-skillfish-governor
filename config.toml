@@ -1,26 +1,30 @@
 # us
 [timing.intervals]
-sample = 250
-adjust = 100_000
+sample = 500
+adjust = 200_000
+
+[gpu-usage]
+fix-metrics = true
+method = "process"
 
 # MHz/ms
 [timing.ramp-rates]
 normal = 1
-burst = 10
+burst = 50
 
 # number of samples
 [timing]
-burst-samples = 50
-down-events = 50
+burst-samples = 60
+down-events = 5
 
 # MHz
 [frequency-thresholds]
-adjust = 50
+adjust = 10
 
 # %
 [load-target]
-upper = 0.75
-lower = 0.50
+upper = 0.80
+lower = 0.65
 
 #°C
 [temperature]
@@ -28,7 +32,7 @@ throttling = 85
 throttling_recovery = 75
 
 [[safe-points]]
-frequency = 400
+frequency = 500
 voltage = 700
 
 [[safe-points]]
@@ -69,22 +73,24 @@ voltage = 1015
 
 [[safe-points]]
 frequency = 2150
-voltage = 1025
+voltage = 1030
 
 [[safe-points]]
 frequency = 2200
-voltage = 1045
+voltage = 1050
 
 [[safe-points]]
 frequency = 2230
-voltage = 1075
+voltage = 1085
 
 [[safe-points]]
 frequency = 2300
-voltage = 1100
+voltage = 1110
 
 [[safe-points]]
 frequency = 2350
-voltage = 1125
+voltage = 1130
 
-
+# [[safe-points]]
+# frequency = 2400
+# voltage = 1150
