@@ -1,14 +1,14 @@
 use crate::config::{GpuSetMethod, GpuUsageMethod};
 use cyan_skillfish_governor_smu::Bc250Smu;
 use libdrm_amdgpu_sys::{AMDGPU::DeviceHandle, PCI::BUS_INFO};
-use std::{
-    collections::{BTreeMap, HashMap},
-    fs::{self, File},
-    io::{Error as IoError, Write},
-    os::fd::AsRawFd,
-    path::PathBuf,
-    time::{Duration, Instant},
-};
+use std::{collections::BTreeMap, fs::File, io::Error as IoError, os::fd::AsRawFd, time::Duration};
+
+#[path = "gpu/kernel_freq_strategy.rs"]
+mod kernel_freq_strategy;
+use kernel_freq_strategy::KernelFreqStrategy;
+#[path = "gpu/process_usage_strategy.rs"]
+mod process_usage_strategy;
+use process_usage_strategy::ProcessUsageStrategy;
 
 // cyan_skillfish.gfx1013.mmGRBM_STATUS
 const GRBM_STATUS_REG: u32 = 0x2004;
@@ -43,11 +43,6 @@ struct SmuFreqStrategy {
 }
 struct BusyFlagUsageStrategy {
     samples: u64,
-}
-
-struct ProcessUsageStrategy {
-    prev_gfx_time: Option<u64>,
-    prev_time: Option<Instant>,
 }
 
 pub struct GPU {
@@ -162,81 +157,6 @@ impl GPU {
     }
 }
 
-fn get_total_gfx_time_from_fdinfo(target_pdev: &str) -> u64 {
-    let mut gfx_times: HashMap<u32, u64> = HashMap::new();
-
-    let proc_entries = match fs::read_dir("/proc") {
-        Ok(v) => v,
-        Err(_) => return 0,
-    };
-
-    for proc_entry in proc_entries.flatten() {
-        let name = proc_entry.file_name();
-        let name = name.to_string_lossy();
-        if !name.chars().all(|c| c.is_ascii_digit()) {
-            continue;
-        }
-
-        let fdinfo_dir = proc_entry.path().join("fdinfo");
-        let fdinfos = match fs::read_dir(fdinfo_dir) {
-            Ok(v) => v,
-            Err(_) => continue,
-        };
-
-        for fdinfo in fdinfos.flatten() {
-            let content = match fs::read_to_string(fdinfo.path()) {
-                Ok(c) => c,
-                Err(_) => continue,
-            };
-
-            let mut cid: Option<u32> = None;
-            let mut pdev: Option<&str> = None;
-            let mut engine_total: u64 = 0;
-
-            for line in content.lines() {
-                if let Some(v) = line.strip_prefix("drm-client-id:") {
-                    cid = v.trim().parse::<u32>().ok();
-                    continue;
-                }
-                if let Some(v) = line.strip_prefix("drm-pdev:") {
-                    pdev = Some(v.trim());
-                    continue;
-                }
-                if let Some((_, rest)) = line
-                    .strip_prefix("drm-engine-")
-                    .and_then(|v| v.split_once(':'))
-                {
-                    let mut fields = rest.split_whitespace();
-                    let Some(value_tok) = fields.next() else {
-                        continue;
-                    };
-                    // Skip non-time drm-engine fields by requiring ns unit.
-                    if fields.next() != Some("ns") {
-                        continue;
-                    }
-                    let value = value_tok.parse::<u64>().unwrap_or(0);
-                    engine_total = engine_total.saturating_add(value);
-                }
-            }
-
-            if let Some(pdev) = pdev
-                && pdev != target_pdev
-            {
-                continue;
-            }
-
-            if let Some(cid) = cid {
-                let e = gfx_times.entry(cid).or_insert(0);
-                if engine_total > *e {
-                    *e = engine_total;
-                }
-            }
-        }
-    }
-
-    gfx_times.values().copied().sum()
-}
-
 impl SmuFreqStrategy {
     fn new() -> Result<Self, Box<dyn std::error::Error>> {
         let smu = Bc250Smu::new("0000:00:00.0", true, true, 500)?;
@@ -267,141 +187,6 @@ impl FreqStrategy for SmuFreqStrategy {
     }
 }
 
-struct KernelFreqStrategy {
-    pp_file: File,
-    dpm_sclk: PathBuf,
-    pp_od_clk_voltage_path: PathBuf,
-}
-
-impl KernelFreqStrategy {
-    fn new(gpu_sysfs_path: PathBuf) -> Result<Self, IoError> {
-        let pp_od_clk_voltage_path = gpu_sysfs_path.join("pp_od_clk_voltage");
-        let pp_file = std::fs::OpenOptions::new()
-            .write(true)
-            .open(&pp_od_clk_voltage_path)?;
-        let dpm_sclk = gpu_sysfs_path.join("pp_dpm_sclk");
-        Ok(Self {
-            pp_file,
-            dpm_sclk,
-            pp_od_clk_voltage_path,
-        })
-    }
-}
-
-impl FreqStrategy for KernelFreqStrategy {
-    fn change_freq(&mut self, freq: u32, vol: u32) -> Result<(), IoError> {
-        let cmd = format!("vc 0 {freq} {vol}");
-        self.pp_file.write_all(cmd.as_bytes()).map_err(|e| {
-            IoError::other(format!("writing '{cmd}' to pp_od_clk_voltage failed: {e}"))
-        })?;
-        self.pp_file.write_all("c".as_bytes()).map_err(|e| {
-            IoError::other(format!(
-                "writing 'c' (commit) to pp_od_clk_voltage failed: {e}"
-            ))
-        })?;
-        Ok(())
-    }
-
-    fn get_freq(&self) -> Result<u32, IoError> {
-        let content = std::fs::read_to_string(&self.dpm_sclk)?;
-
-        let line = content
-            .lines()
-            .find(|line| line.contains('*'))
-            .ok_or(IoError::other("failed to find active pp_dpm_sclk level"))?;
-
-        let freq_mhz = line
-            .split_whitespace()
-            .find_map(|token| token.strip_suffix("Mhz"))
-            .ok_or(IoError::other(
-                "failed to parse pp_dpm_sclk frequency token",
-            ))?
-            .parse::<u32>()
-            .map_err(IoError::other)?;
-
-        Ok(freq_mhz)
-    }
-
-    fn clamp_safe_points(
-        &self,
-        safe_points: BTreeMap<u32, u32>,
-    ) -> Result<BTreeMap<u32, u32>, IoError> {
-        let content = match std::fs::read_to_string(&self.pp_od_clk_voltage_path) {
-            Ok(c) => c,
-            Err(e) => {
-                eprintln!(
-                    "warning: could not read pp_od_clk_voltage for SCLK limits ({e}), skipping clamp"
-                );
-                return Ok(safe_points);
-            }
-        };
-
-        let Some((sclk_min, sclk_max)) = content.lines().find_map(|line| {
-            let rest = line.trim().strip_prefix("SCLK:")?;
-            let mut vals = rest
-                .split_whitespace()
-                .filter_map(|t| t.strip_suffix("Mhz")?.parse::<u32>().ok());
-            Some((vals.next()?, vals.next()?))
-        }) else {
-            eprintln!("warning: SCLK limits not found in pp_od_clk_voltage, skipping clamp");
-            return Ok(safe_points);
-        };
-
-        let vddc_limits = content.lines().find_map(|line| {
-            let rest = line.trim().strip_prefix("VDDC:")?;
-            let mut vals = rest.split_whitespace().filter_map(|t| {
-                t.strip_suffix("mV")
-                    .or_else(|| t.strip_suffix("mv"))?
-                    .parse::<u32>()
-                    .ok()
-            });
-            Some((vals.next()?, vals.next()?))
-        });
-
-        if vddc_limits.is_none() {
-            eprintln!(
-                "warning: VDDC limits not found in pp_od_clk_voltage, skipping voltage clamp"
-            );
-        }
-
-        Ok(safe_points.into_iter().fold(BTreeMap::new(), |mut acc, (freq, vol)| {
-            let clamped_freq = freq.clamp(sclk_min, sclk_max);
-            if clamped_freq != freq {
-                eprintln!(
-                    "warning: clamping safe point frequency {}Mhz -> {}Mhz (SCLK range {}-{}Mhz)",
-                    freq, clamped_freq, sclk_min, sclk_max
-                );
-            }
-
-            let clamped_vol = if let Some((vddc_min, vddc_max)) = vddc_limits {
-                let clamped = vol.clamp(vddc_min, vddc_max);
-                if clamped != vol {
-                    eprintln!(
-                        "warning: clamping safe point voltage {}mV -> {}mV (VDDC range {}-{}mV)",
-                        vol, clamped, vddc_min, vddc_max
-                    );
-                }
-                clamped
-            } else {
-                vol
-            };
-
-            match acc.get_mut(&clamped_freq) {
-                Some(existing_vol) => {
-                    if clamped_vol > *existing_vol {
-                        *existing_vol = clamped_vol;
-                    }
-                }
-                None => {
-                    acc.insert(clamped_freq, clamped_vol);
-                }
-            }
-
-            acc
-        }))
-    }
-}
-
 impl UsageStrategy for BusyFlagUsageStrategy {
     fn poll_and_get_load(
         &mut self,
@@ -425,29 +210,5 @@ impl UsageStrategy for BusyFlagUsageStrategy {
         let average_load = (self.samples.count_ones() as f32) / 64.0;
         let burst_length = (!self.samples).trailing_zeros();
         Ok((average_load, burst_length))
-    }
-}
-
-impl UsageStrategy for ProcessUsageStrategy {
-    fn poll_and_get_load(
-        &mut self,
-        _dev_handle: &DeviceHandle,
-        process_fdinfo_pdev: &str,
-        _sampling_interval: Duration,
-    ) -> Result<(f32, u32), IoError> {
-        let current_gfx_time = get_total_gfx_time_from_fdinfo(process_fdinfo_pdev);
-        let current_time = Instant::now();
-
-        let Some(prev_gfx_time) = self.prev_gfx_time.replace(current_gfx_time) else {
-            self.prev_time = Some(current_time);
-            return Ok((0.0, 0));
-        };
-
-        let prev_time = self.prev_time.replace(current_time).unwrap_or(current_time);
-        let delta_gfx_time = current_gfx_time.saturating_sub(prev_gfx_time);
-        let delta_time_ns = current_time.duration_since(prev_time).as_nanos() as u64;
-        let usage = ((delta_gfx_time as f64) / (delta_time_ns as f64)).clamp(0.0, 1.0) as f32;
-
-        Ok((usage, 0))
     }
 }
