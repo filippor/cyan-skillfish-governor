@@ -1,14 +1,8 @@
 use std::{
-    fs::{self, OpenOptions},
+    fs::{self, File, OpenOptions},
     io::{self, Read, Seek, SeekFrom, Write},
     path::Path,
     process::Command,
-    sync::{
-        atomic::{AtomicBool, AtomicU16, Ordering},
-        Arc,
-    },
-    thread::{self, JoinHandle},
-    time::Duration,
 };
 
 const REAL_METRICS: &str = "/sys/class/drm/card1/device/gpu_metrics";
@@ -16,9 +10,8 @@ const PATCHED_METRICS: &str = "/var/amd_gpu_usage_fix/patched_metrics";
 const USAGE_OFFSET: usize = 0x1C; // Byte 28
 
 pub struct GpuUsageFix {
-    stop: Arc<AtomicBool>,
-    usage_percent: Arc<AtomicU16>,
-    worker: Option<JoinHandle<()>>,
+    real_file: File,
+    patched_file: File,
 }
 
 impl GpuUsageFix {
@@ -45,62 +38,36 @@ impl GpuUsageFix {
         mount_bind(PATCHED_METRICS, REAL_METRICS)?;
         let patched_file = OpenOptions::new().write(true).open(PATCHED_METRICS)?;
 
-        let stop = Arc::new(AtomicBool::new(false));
-        let usage_percent = Arc::new(AtomicU16::new(0));
-
-        let stop_worker = Arc::clone(&stop);
-        let usage_worker = Arc::clone(&usage_percent);
-
-        let worker = thread::spawn(move || {
-            let mut real_file = real_file;
-            let mut patched_file = patched_file;
-            let mut raw = [0u8; 128];
-
-            while !stop_worker.load(Ordering::Relaxed) {
-                thread::sleep(Duration::from_millis(250));
-
-                if real_file.seek(SeekFrom::Start(0)).is_err() {
-                    continue;
-                }
-                let n = match real_file.read(&mut raw) {
-                    Ok(n) => n,
-                    Err(_) => continue,
-                };
-                if n < USAGE_OFFSET + 2 {
-                    continue;
-                }
-
-                let usage = usage_worker.load(Ordering::Relaxed).min(100);
-                raw[USAGE_OFFSET] = (usage & 0x00FF) as u8;
-                raw[USAGE_OFFSET + 1] = (usage >> 8) as u8;
-
-                if patched_file.seek(SeekFrom::Start(0)).is_err() {
-                    continue;
-                }
-                let _ = patched_file.write_all(&raw);
-                let _ = patched_file.flush();
-            }
-        });
-
         Ok(Self {
-            stop,
-            usage_percent,
-            worker: Some(worker),
+            real_file,
+            patched_file,
         })
     }
 
-    pub fn set_usage_percent(&self, usage: f32) {
+    pub fn set_usage_percent(&mut self, usage: f32) -> io::Result<()> {
         let clamped = usage.clamp(0.0, 100.0).round() as u16;
-        self.usage_percent.store(clamped, Ordering::Relaxed);
+        let mut raw = [0u8; 128];
+
+        self.real_file.seek(SeekFrom::Start(0))?;
+        let n = self.real_file.read(&mut raw)?;
+
+        if n < USAGE_OFFSET + 2 {
+            return Ok(());
+        }
+
+        raw[USAGE_OFFSET] = (clamped & 0x00FF) as u8;
+        raw[USAGE_OFFSET + 1] = (clamped >> 8) as u8;
+
+        self.patched_file.seek(SeekFrom::Start(0))?;
+        self.patched_file.write_all(&raw)?;
+        self.patched_file.flush()?;
+
+        Ok(())
     }
 }
 
 impl Drop for GpuUsageFix {
     fn drop(&mut self) {
-        self.stop.store(true, Ordering::Relaxed);
-        if let Some(worker) = self.worker.take() {
-            let _ = worker.join();
-        }
         let _ = umount_bind(REAL_METRICS);
     }
 }

@@ -28,7 +28,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .unwrap_or(Ok("".to_string())),
     )?;
 
-    let gpu_usage_fix = if config.gpu_metric_fix {
+    let mut gpu_usage_fix = if config.gpu_metric_fix {
         match GpuUsageFix::start() {
             Ok(fix) => {
                 println!("GPU usage metrics fix enabled");
@@ -66,8 +66,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             GpuUsageMethod::Process => gpu.poll_and_get_load_from_process()?,
         };
 
-        if let Some(fix) = &gpu_usage_fix {
-            fix.set_usage_percent(average_load * 100.0);
+        if let Some(fix) = gpu_usage_fix.as_mut(){
+            if let Err(e) = fix.set_usage_percent(average_load * 100.0) {
+                eprintln!("GPU usage metrics fix write failed: {e}");
+            }
         }
 
         let burst = config
