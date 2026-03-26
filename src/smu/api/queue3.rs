@@ -1,5 +1,5 @@
-use crate::codec::{decode_u32, mv_to_vid, pack_f32, pack_s16, pack_u32};
-use crate::{Bc250Smu, Result};
+use crate::smu::codec::{decode_u32, mv_to_vid, pack_f32, pack_s16, pack_u32};
+use crate::smu::{Bc250Smu, Result};
 
 impl Bc250Smu {
     // Queue 3 methods - Advanced control and monitoring
@@ -266,7 +266,7 @@ impl Bc250Smu {
 
     pub fn set_cpu_vid_offset(&self, offset: i8) -> Result<()> {
         if offset < -5 || offset > 5 {
-            return Err(crate::smu_errors::SmuError::Io(std::io::Error::new(
+            return Err(crate::smu::smu_errors::SmuError::Io(std::io::Error::new(
                 std::io::ErrorKind::InvalidInput,
                 "Offset must be in range -5 to 5",
             )));
@@ -277,7 +277,7 @@ impl Bc250Smu {
 
     pub fn set_gfx_vid_offset(&self, offset: i8) -> Result<()> {
         if offset < -5 || offset > 5 {
-            return Err(crate::smu_errors::SmuError::Io(std::io::Error::new(
+            return Err(crate::smu::smu_errors::SmuError::Io(std::io::Error::new(
                 std::io::ErrorKind::InvalidInput,
                 "Offset must be in range -5 to 5",
             )));

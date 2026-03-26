@@ -1,4 +1,4 @@
-use crate::{Bc250Smu, Result};
+use crate::smu::{Bc250Smu, Result};
 
 impl Bc250Smu {
     // Queue 1 methods - Very limited, mostly undocumented

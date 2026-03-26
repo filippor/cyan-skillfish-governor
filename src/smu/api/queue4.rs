@@ -1,5 +1,5 @@
-use crate::codec::pack_u32;
-use crate::{Bc250Smu, Result};
+use crate::smu::codec::pack_u32;
+use crate::smu::{Bc250Smu, Result};
 
 impl Bc250Smu {
     // Queue 4 methods - Mostly undocumented functionality

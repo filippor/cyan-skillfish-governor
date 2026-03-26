@@ -1,4 +1,4 @@
-use crate::smu_errors::{Result, SmuError};
+use super::smu_errors::{Result, SmuError};
 use nix::fcntl::{Flock, FlockArg};
 use std::fs::File;
 use std::ops::Deref;
