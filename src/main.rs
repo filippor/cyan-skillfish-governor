@@ -4,14 +4,13 @@ mod gpu;
 mod gpu_usage_fix;
 use app_error::Result;
 use clap::Parser;
-use config::Config;
+use config::{Config, TimingConfig};
 use gpu::GPU;
 use gpu_usage_fix::GpuUsageFix;
 use log::{debug, error, info};
-use std::sync::{
-    Arc,
-    atomic::{AtomicBool, Ordering},
-};
+use signal_hook::consts::signal::*;
+use signal_hook::iterator::Signals;
+use std::sync::mpsc::{self, Sender, TryRecvError};
 use std::time::{Duration, Instant};
 
 const UP_EVENTS: i16 = 2;
@@ -29,7 +28,8 @@ fn main() -> Result<()> {
     let args = Args::parse();
     init_logger(args.verbose);
 
-    let running = install_signal_handler()?;
+    let (shutdown_tx, shutdown_rx) = mpsc::channel::<()>();
+    install_signal_handler(shutdown_tx)?;
     let config = load_config(args.config_path.as_deref())?;
     let mut gpu_usage_fix = start_gpu_usage_fix(config.gpu_usage.fix_metrics)?;
 
@@ -43,7 +43,7 @@ fn main() -> Result<()> {
     );
 
     let mut gpu = GPU::new(
-        config.safe_points.clone(),
+        config.safe_points,
         config.gpu.set_method,
         config.gpu_usage.method,
         config.timing.sampling_interval,
@@ -63,7 +63,12 @@ fn main() -> Result<()> {
 
     info!("freq min {} max {}", gpu.min_freq, max_freq);
 
-    while running.load(Ordering::Relaxed) {
+    loop {
+        match shutdown_rx.try_recv() {
+            Ok(()) | Err(TryRecvError::Disconnected) => break,
+            Err(TryRecvError::Empty) => {}
+        }
+
         let loop_start = Instant::now();
         let (average_load, burst_length) = gpu.poll_and_get_load()?;
 
@@ -74,9 +79,15 @@ fn main() -> Result<()> {
             average_load,
         );
 
-        let burst = is_burst(&config, average_load, burst_length);
-        let temp = update_max_freq_for_temperature(&mut gpu, &config, &mut max_freq, freq_step)?;
+        let temp = update_max_freq_for_temperature(
+            &mut gpu,
+            &config.temperature,
+            &config.frequency_thresholds,
+            &mut max_freq,
+            freq_step,
+        )?;
 
+        let burst = is_burst(&config.timing, average_load, burst_length);
         if burst {
             target_freq += burst_freq_step;
         } else {
@@ -102,8 +113,9 @@ fn main() -> Result<()> {
         let hit_bounds = target_freq == gpu.min_freq || target_freq == max_freq;
         let big_change =
             curr_freq.abs_diff(target_freq) >= config.frequency_thresholds.significant_change;
+        let should_apply_change = curr_freq != target_freq && (burst || hit_bounds || big_change);
 
-        if curr_freq != target_freq && (burst || hit_bounds || big_change) {
+        if should_apply_change {
             debug!(
                 "freq curr {} target {} temp {} status {} de {} load {:.2} bl {}",
                 curr_freq,
@@ -137,14 +149,15 @@ fn init_logger(verbose: bool) {
         .try_init();
 }
 
-fn install_signal_handler() -> Result<Arc<AtomicBool>> {
-    let running = Arc::new(AtomicBool::new(true));
-    let running_signal = Arc::clone(&running);
-    ctrlc::set_handler(move || {
-        running_signal.store(false, Ordering::SeqCst);
-    })?;
+fn install_signal_handler(shutdown_tx: Sender<()>) -> Result<()> {
+    let mut signals = Signals::new(&[SIGINT, SIGTERM])?;
+    std::thread::spawn(move || {
+        for _sig in signals.forever() {
+            let _ = shutdown_tx.send(());
+        }
+    });
 
-    Ok(running)
+    Ok(())
 }
 
 fn load_config(config_path: Option<&str>) -> Result<Config> {
@@ -184,27 +197,27 @@ fn flush_gpu_usage_fix(
     }
 }
 
-fn is_burst(config: &Config, average_load: f32, burst_length: u32) -> bool {
+fn is_burst(timing: &TimingConfig, average_load: f32, burst_length: u32) -> bool {
     average_load >= 0.99
-        || config
-            .timing
+        || timing
             .burst_samples
             .is_some_and(|burst_samples| burst_length >= burst_samples)
 }
 
 fn update_max_freq_for_temperature(
     gpu: &mut GPU,
-    config: &Config,
+    temperature: &config::TemperatureConfig,
+    frequency_thresholds: &config::FrequencyThresholdConfig,
     max_freq: &mut u32,
     freq_step: u32,
 ) -> Result<u32> {
     let temp = gpu.read_temperature()?;
 
-    if let Some(max_temp) = config.temperature.throttling_temp {
+    if let Some(max_temp) = temperature.throttling_temp {
         if temp > max_temp && *max_freq >= gpu.min_freq + freq_step {
-            *max_freq -= config.frequency_thresholds.significant_change;
+            *max_freq -= frequency_thresholds.significant_change;
             debug!("throttling temp {temp} freq {}", *max_freq);
-        } else if let Some(recovery_temp) = config.temperature.throttling_recovery_temp
+        } else if let Some(recovery_temp) = temperature.throttling_recovery_temp
             && temp < recovery_temp
             && *max_freq != gpu.max_freq
         {
@@ -283,15 +296,15 @@ mod tests {
     fn burst_triggers_on_high_average_load() {
         let config = test_config();
 
-        assert!(is_burst(&config, 0.99, 0));
+        assert!(is_burst(&config.timing, 0.99, 0));
     }
 
     #[test]
     fn burst_triggers_on_burst_length_threshold() {
         let config = test_config();
 
-        assert!(is_burst(&config, 0.50, 48));
-        assert!(!is_burst(&config, 0.50, 47));
+        assert!(is_burst(&config.timing, 0.50, 48));
+        assert!(!is_burst(&config.timing, 0.50, 47));
     }
 
     #[test]
@@ -299,17 +312,17 @@ mod tests {
         let mut config = test_config();
         config.timing.burst_samples = None;
 
-        assert!(!is_burst(&config, 0.50, 64));
+        assert!(!is_burst(&config.timing, 0.50, 64));
     }
 
     #[test]
     fn frequency_change_is_applied_for_burst_even_without_big_change() {
         let curr_freq: u32 = 1000;
-        let target_freq = 1001;
+        let target_freq: u32 = 1001;
         let burst = true;
-        let min_freq = 350;
-        let max_freq = 2000;
-        let significant_change = 10;
+        let min_freq: u32 = 350;
+        let max_freq: u32 = 2000;
+        let significant_change: u32 = 10;
         let hit_bounds = target_freq == min_freq || target_freq == max_freq;
         let big_change = curr_freq.abs_diff(target_freq) >= significant_change;
 
@@ -319,10 +332,10 @@ mod tests {
     #[test]
     fn frequency_change_is_applied_when_target_hits_bound() {
         let curr_freq: u32 = 1000;
-        let significant_change = 10;
+        let significant_change: u32 = 10;
 
         {
-            let target_freq = 350;
+            let target_freq: u32 = 350;
             let burst = false;
             let hit_bounds = true;
             let big_change = curr_freq.abs_diff(target_freq) >= significant_change;
@@ -330,7 +343,7 @@ mod tests {
         }
 
         {
-            let target_freq = 2000;
+            let target_freq: u32 = 2000;
             let burst = false;
             let hit_bounds = true;
             let big_change = curr_freq.abs_diff(target_freq) >= significant_change;
@@ -341,27 +354,27 @@ mod tests {
     #[test]
     fn frequency_change_requires_reason_when_not_bursting() {
         let curr_freq: u32 = 1000;
-        let min_freq = 350;
-        let max_freq = 2000;
+        let min_freq: u32 = 350;
+        let max_freq: u32 = 2000;
         let burst = false;
-        let significant_change = 10;
+        let significant_change: u32 = 10;
 
         {
-            let target_freq = 1005;
+            let target_freq: u32 = 1005;
             let hit_bounds = target_freq == min_freq || target_freq == max_freq;
             let big_change = curr_freq.abs_diff(target_freq) >= significant_change;
             assert!(!(curr_freq != target_freq && (burst || hit_bounds || big_change)));
         }
 
         {
-            let target_freq = 1010;
+            let target_freq: u32 = 1010;
             let hit_bounds = target_freq == min_freq || target_freq == max_freq;
             let big_change = curr_freq.abs_diff(target_freq) >= significant_change;
             assert!(curr_freq != target_freq && (burst || hit_bounds || big_change));
         }
 
         {
-            let target_freq = 1000;
+            let target_freq: u32 = 1000;
             let hit_bounds = target_freq == min_freq || target_freq == max_freq;
             let big_change = curr_freq.abs_diff(target_freq) >= significant_change;
             assert!(!(curr_freq != target_freq && (burst || hit_bounds || big_change)));
