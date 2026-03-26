@@ -1,5 +1,5 @@
-use crate::codec::{decode_u32, pack_u32};
-use crate::{Bc250Smu, Result};
+use crate::smu::codec::{decode_u32, pack_u32};
+use crate::smu::{Bc250Smu, Result};
 
 impl Bc250Smu {
     // Queue 2 methods - Device information and feature control
@@ -30,7 +30,10 @@ impl Bc250Smu {
 
         let end = bytes.iter().position(|&b| b == 0).unwrap_or(bytes.len());
         String::from_utf8(bytes[..end].to_vec()).map_err(|e| {
-            crate::smu_errors::SmuError::Io(std::io::Error::new(std::io::ErrorKind::InvalidData, e))
+            crate::smu::smu_errors::SmuError::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                e,
+            ))
         })
     }
 

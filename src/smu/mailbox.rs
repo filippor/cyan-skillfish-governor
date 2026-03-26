@@ -1,5 +1,5 @@
-use crate::smu_errors::{Result, SmuError};
-use crate::transport::Bc250PciTransport;
+use super::smu_errors::{Result, SmuError};
+use super::transport::Bc250PciTransport;
 use std::sync::Mutex;
 
 #[repr(u8)]

@@ -1,5 +1,5 @@
-use crate::codec::{decode_u32, mv_to_vid, pack_u32, vid_to_mv};
-use crate::{Bc250Smu, Result};
+use crate::smu::codec::{decode_u32, mv_to_vid, pack_u32, vid_to_mv};
+use crate::smu::{Bc250Smu, Result};
 
 impl Bc250Smu {
     // Queue 0 methods - General SMU control
