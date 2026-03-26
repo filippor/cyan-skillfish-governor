@@ -123,12 +123,11 @@ fn parse_timing_config(config: &Table) -> TimingConfig {
         adjustment_interval_default,
     ) as u64;
 
-    let burst_samples = parse_optional_integer_in_range_or_default(
+    let burst_samples = parse_optional_integer_clamped(
         timing,
         "burst-samples",
         "timing.burst-samples",
         1..=64,
-        Some(48),
     );
 
     const I16_MAX: i64 = i16::MAX as i64;
@@ -157,7 +156,7 @@ fn parse_timing_config(config: &Table) -> TimingConfig {
         (200.0 * ramp_rate) as f64,
     ) as f32;
 
-    let ramp_rate_burst = if burst_samples.is_some() && ramp_rate_burst <= ramp_rate {
+    let ramp_rate_burst = if ramp_rate_burst <= ramp_rate {
         warn!(
             "timing.ramp-rates.burst must, if bursting is active, be greater than timing.ramp-rates.normal (if you want to turn bursting off, set timing.burst-samples = 0), replaced with the default value of 200 * timing.ramp-rates.normal"
         );
@@ -324,13 +323,12 @@ fn parse_temperature_config(config: &Table) -> TemperatureConfig {
 
     let throttling_recovery_temp = throttling_temp.and_then(|max_recovery| {
         let max_allowed = i64::from(max_recovery.saturating_sub(1));
-        parse_optional_integer_in_range_or_default(
+        parse_optional_integer_in_range_or_missing(
             temperature,
             "throttling_recovery",
             "temperature.throttling_recovery",
-            1..=max_allowed,
-            Some(max_allowed as u32),
-        )
+            1..=max_allowed
+        ).map(|v| v as u32)
     });
 
     TemperatureConfig {
@@ -435,149 +433,139 @@ fn number_value(table: Option<&Table>, key: &str) -> ValueResult<f64> {
         })
 }
 
+
+
 macro_rules! impl_parse_in_range_or_default {
-    ($func_name:ident, $value_getter:ident, $type:ty) => {
-        fn $func_name<R>(
+    ($func_name:ident, $optional_getter:ident, $type:ty) => {
+        fn $func_name<R: std::ops::RangeBounds<$type> + std::fmt::Debug>(
             table: Option<&Table>,
             key: &str,
             config_key: &str,
             range: R,
             default: $type,
-        ) -> $type
-        where
-            R: std::ops::RangeBounds<$type> + std::fmt::Debug,
-        {
-            let value = $value_getter(table, key);
-            match value {
-                Ok(v) if range.contains(&v) => v,
+        ) -> $type {
+            $optional_getter(table, key, config_key, &range).unwrap_or(default)
+        }
+    };
+}
+
+impl_parse_in_range_or_default!(parse_integer_in_range_or_default, parse_integer_in_range_optional, i64);
+impl_parse_in_range_or_default!(parse_float_in_range_or_default, parse_float_in_range_optional, f64);
+
+
+fn parse_optional_integer_in_range_or_missing<R: std::ops::RangeBounds<i64> + std::fmt::Debug>(
+    table: Option<&Table>,
+    key: &str,
+    config_key: &str,
+    range: R,
+) -> Option<i64> {
+    parse_integer_in_range_optional(table, key, config_key, &range).or_else(|| {
+        warn!("{} is missing", config_key);
+        None
+    })
+       
+}
+
+
+fn parse_optional_integer_clamped<R: std::ops::RangeBounds<i64> + std::fmt::Debug>(
+    table: Option<&Table>,
+    key: &str,
+    config_key: &str,
+    range: R,
+) -> Option<u32> {
+    match integer_value(table, key) {
+        Ok(v) if range.contains(&v) => Some(v as u32),
+        Ok(v) if v < 0 => {
+            warn!("{} = {} is negative, disabling", config_key, v);
+            None
+        }
+        Ok(v) => {
+            let min = match range.start_bound() {
+                std::ops::Bound::Included(m) => *m,
+                std::ops::Bound::Excluded(m) => m.saturating_add(1),
+                std::ops::Bound::Unbounded => i64::MIN,
+            };
+            let max = match range.end_bound() {
+                std::ops::Bound::Included(m) => *m,
+                std::ops::Bound::Excluded(m) => m.saturating_sub(1),
+                std::ops::Bound::Unbounded => i64::MAX,
+            };
+
+            let clamped = v.clamp(min, max);
+            if clamped != v {
+                warn!(
+                    "{} = {} must be between {} and {} clamping to {}",
+                    config_key,
+                    v,
+                    range_min(&range),
+                    range_max(&range),
+                    clamped
+                );
+            }
+            Some(clamped as u32)
+        }
+        Err(s) => {
+            warn!("{} = {} — disabling", config_key, s);
+            None
+        }
+    }
+}
+
+macro_rules! impl_parse_in_range_optional {
+    ($func_name:ident, $value_getter:ident, $type:ty) => {
+        fn $func_name<R: std::ops::RangeBounds<$type> + std::fmt::Debug>(
+            table: Option<&Table>,
+            key: &str,
+            config_key: &str,
+            range: &R,
+        ) -> Option<$type> {
+            match $value_getter(table, key) {
+                Ok(v) if range.contains(&v) => Some(v),
                 Ok(v) => {
-                    let min_str = match range.start_bound() {
-                        std::ops::Bound::Included(m) => format!("{}", m),
-                        std::ops::Bound::Excluded(m) => format!("{}", m),
-                        std::ops::Bound::Unbounded => "unbounded".to_string(),
-                    };
-                    let max_str = match range.end_bound() {
-                        std::ops::Bound::Included(m) => format!("{}", m),
-                        std::ops::Bound::Excluded(m) => format!("{}", m),
-                        std::ops::Bound::Unbounded => "unbounded".to_string(),
-                    };
-                    let range_type = match (range.start_bound(), range.end_bound()) {
-                        (std::ops::Bound::Included(_), std::ops::Bound::Included(_)) => "inclusive",
-                        _ => "exclusive",
-                    };
-                    warn!(
-                        "{} = {} must be between {} and {} ({}), using default value of {}",
-                        config_key, v, min_str, max_str, range_type, default
-                    );
-                    default
+                    warn!("{} = {} must be between {} and {}", config_key, v, range_min(range), range_max(range));
+                    None
                 }
                 Err(s) => {
-                    warn!(
-                        "{} = {} , using default value of {}",
-                        config_key, s, default
-                    );
-                    default
+                    warn!("{} = {}", config_key, s);
+                    None
                 }
             }
         }
     };
 }
 
-impl_parse_in_range_or_default!(parse_integer_in_range_or_default, integer_value, i64);
-impl_parse_in_range_or_default!(parse_float_in_range_or_default, number_value, f64);
+impl_parse_in_range_optional!(
+    parse_integer_in_range_optional,
+    integer_value,
+    i64
+);
+impl_parse_in_range_optional!(
+    parse_float_in_range_optional,
+    number_value,
+    f64
+);
 
-fn parse_optional_integer_in_range_or_default<R>(
-    table: Option<&Table>,
-    key: &str,
-    config_key: &str,
-    range: R,
-    default: Option<u32>,
-) -> Option<u32>
+fn range_min<T, R>(range: &R) -> String
 where
-    R: std::ops::RangeBounds<i64> + std::fmt::Debug,
+    T: std::fmt::Display,
+    R: std::ops::RangeBounds<T>,
 {
-    match integer_value(table, key) {
-        Err(s) => match default {
-            Some(def) => {
-                warn!("{} = {}, using default value of {}", config_key, s, def);
-                Some(def)
-            }
-            _ => {
-                warn!("{} = {} — disabling", config_key, s);
-                None
-            }
-        },
-        Ok(v) if v <= 0 => {
-            if v < 0 {
-                warn!("{} = {} is negative — disabling", config_key, v);
-            }
-            None
-        }
-        Ok(v) if range.contains(&v) => Some(v as u32),
-        Ok(v) => match default {
-            Some(def) => {
-                let min_str = match range.start_bound() {
-                    std::ops::Bound::Included(m) => format!("{}", m),
-                    std::ops::Bound::Excluded(m) => format!("{}", m),
-                    std::ops::Bound::Unbounded => "unbounded".to_string(),
-                };
-                let max_str = match range.end_bound() {
-                    std::ops::Bound::Included(m) => format!("{}", m),
-                    std::ops::Bound::Excluded(m) => format!("{}", m),
-                    std::ops::Bound::Unbounded => "unbounded".to_string(),
-                };
-                warn!(
-                    "{} = {} must be between {} and {}, using default value of {}",
-                    config_key, v, min_str, max_str, def
-                );
-                Some(def)
-            }
-            None => {
-                warn!("{} is missing — disabling", config_key);
-                None
-            }
-        },
+    match range.start_bound() {
+        std::ops::Bound::Included(m) => format!("{} (included)", m),
+        std::ops::Bound::Excluded(m) => format!("{} (excluded)", m),
+        std::ops::Bound::Unbounded => "unbounded".into(),
     }
 }
 
-fn parse_optional_integer_clamped<R>(
-    table: Option<&Table>,
-    key: &str,
-    config_key: &str,
-    range: R,
-) -> Option<u32>
+fn range_max<T, R>(range: &R) -> String
 where
-    R: std::ops::RangeBounds<i64> + std::fmt::Debug,
+    T: std::fmt::Display,
+    R: std::ops::RangeBounds<T>,
 {
-    match integer_value(table, key) {
-        Err(s) => {
-            warn!("{} = {} — disabling", config_key, s);
-            None
-        }
-        Ok(v) if v < 0 => {
-            warn!("{} = {} is negative — disabling", config_key, v);
-            None
-        }
-        Ok(v) if range.contains(&v) => Some(v as u32),
-        Ok(v) => {
-            // Check if value exceeds the maximum bound
-            let max_val = match range.end_bound() {
-                std::ops::Bound::Included(m) => Some(*m),
-                std::ops::Bound::Excluded(m) => Some(m - 1),
-                std::ops::Bound::Unbounded => None,
-            };
-            if let Some(max) = max_val {
-                if v > max {
-                    warn!(
-                        "{} = {} exceeds maximum of {}, clamping",
-                        config_key, v, max
-                    );
-                    return Some(max as u32);
-                }
-            }
-            warn!("{} = {} is below minimum — disabling", config_key, v);
-            None
-        }
+    match range.end_bound() {
+        std::ops::Bound::Included(m) => format!("{} (included)", m),
+        std::ops::Bound::Excluded(m) => format!("{} (excluded)", m),
+        std::ops::Bound::Unbounded => "unbounded".into(),
     }
 }
 
@@ -595,7 +583,7 @@ mod tests {
 
         assert_eq!(cfg.timing.sampling_interval.as_micros(), 2000);
         assert_eq!(cfg.timing.adjustment_interval.as_micros(), 20000);
-        assert_eq!(cfg.timing.burst_samples, Some(48));
+        assert_eq!(cfg.timing.burst_samples, None);
         assert_eq!(cfg.timing.down_events, 10);
         assert!((cfg.load_target.up_thresh - 0.95).abs() < f32::EPSILON);
         assert!((cfg.load_target.down_thresh - 0.80).abs() < f32::EPSILON);
@@ -725,5 +713,80 @@ mod tests {
         assert!(err.to_string().contains(
             "supposedly safe voltage 950 mV for 1000 MHz is higher than 900 mV for 1500 MHz"
         ));
+    }
+
+    #[test]
+    fn parse_integer_in_range_or_default_returns_value_when_in_range() {
+        let config_text = r#"
+            [timing.intervals]
+            sample = 5000
+        "#;
+        let config = parse_config(config_text);
+        assert_eq!(config.timing.sampling_interval.as_micros(), 5000);
+    }
+
+    #[test]
+    fn parse_integer_in_range_or_default_returns_default_when_missing() {
+        let config_text = "";
+        let config = parse_config(config_text);
+        assert_eq!(config.timing.sampling_interval.as_micros(), 2000);
+    }
+
+    #[test]
+    fn parse_integer_in_range_or_default_returns_default_when_out_of_range() {
+        let config_text = r#"
+            [timing.intervals]
+            sample = 0
+        "#;
+        let config = parse_config(config_text);
+        assert_eq!(config.timing.sampling_interval.as_micros(), 2000);
+    }
+
+    #[test]
+    fn parse_optional_integer_in_range_or_default_returns_value_when_in_range() {
+        let config_text = r#"
+            [timing]
+            burst-samples = 50
+        "#;
+        let config = parse_config(config_text);
+        assert_eq!(config.timing.burst_samples, Some(50));
+    }
+
+    
+    #[test]
+    fn parse_optional_integer_clamped_returns_value_when_in_range() {
+        let config_text = r#"
+            [temperature]
+            throttling = 100
+        "#;
+        let config = parse_config(config_text);
+        assert_eq!(config.temperature.throttling_temp, Some(100));
+    }
+
+    #[test]
+    fn parse_optional_integer_clamped_clamps_when_above_max() {
+        let config_text = r#"
+            [temperature]
+            throttling = 200
+        "#;
+        let config = parse_config(config_text);
+        assert_eq!(config.temperature.throttling_temp, Some(110));
+    }
+
+    #[test]
+    fn parse_optional_integer_clamped_disables_when_negative() {
+        let config_text = r#"
+            [temperature]
+            throttling = -10
+        "#;
+        let config = parse_config(config_text);
+        assert_eq!(config.temperature.throttling_temp, None);
+    }
+
+    #[test]
+    fn parse_optional_integer_clamped_returns_none_when_missing() {
+        let config_text = "";
+        let config = parse_config(config_text);
+        assert_eq!(config.temperature.throttling_temp, None);
     }
 }
