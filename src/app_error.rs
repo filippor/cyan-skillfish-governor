@@ -9,9 +9,6 @@ pub enum AppError {
     Toml(#[from] toml::de::Error),
 
     #[error(transparent)]
-    Signal(#[from] ctrlc::Error),
-
-    #[error(transparent)]
     Smu(#[from] cyan_skillfish_governor_smu::SmuError),
 
     #[error("{0}")]

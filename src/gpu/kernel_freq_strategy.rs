@@ -98,40 +98,42 @@ impl FreqStrategy for KernelFreqStrategy {
             warn!("VDDC limits not found in pp_od_clk_voltage, skipping voltage clamp");
         }
 
-        Ok(safe_points.into_iter().fold(BTreeMap::new(), |mut acc, (freq, vol)| {
-            let clamped_freq = freq.clamp(sclk_min, sclk_max);
-            if clamped_freq != freq {
-                warn!(
-                    "clamping safe point frequency {}Mhz -> {}Mhz (SCLK range {}-{}Mhz)",
-                    freq, clamped_freq, sclk_min, sclk_max
-                );
-            }
-
-            let clamped_vol = if let Some((vddc_min, vddc_max)) = vddc_limits {
-                let clamped = vol.clamp(vddc_min, vddc_max);
-                if clamped != vol {
+        Ok(safe_points
+            .into_iter()
+            .fold(BTreeMap::new(), |mut acc, (freq, vol)| {
+                let clamped_freq = freq.clamp(sclk_min, sclk_max);
+                if clamped_freq != freq {
                     warn!(
-                        "clamping safe point voltage {}mV -> {}mV (VDDC range {}-{}mV)",
-                        vol, clamped, vddc_min, vddc_max
+                        "clamping safe point frequency {}Mhz -> {}Mhz (SCLK range {}-{}Mhz)",
+                        freq, clamped_freq, sclk_min, sclk_max
                     );
                 }
-                clamped
-            } else {
-                vol
-            };
 
-            match acc.get_mut(&clamped_freq) {
-                Some(existing_vol) => {
-                    if clamped_vol > *existing_vol {
-                        *existing_vol = clamped_vol;
+                let clamped_vol = if let Some((vddc_min, vddc_max)) = vddc_limits {
+                    let clamped = vol.clamp(vddc_min, vddc_max);
+                    if clamped != vol {
+                        warn!(
+                            "clamping safe point voltage {}mV -> {}mV (VDDC range {}-{}mV)",
+                            vol, clamped, vddc_min, vddc_max
+                        );
+                    }
+                    clamped
+                } else {
+                    vol
+                };
+
+                match acc.get_mut(&clamped_freq) {
+                    Some(existing_vol) => {
+                        if clamped_vol > *existing_vol {
+                            *existing_vol = clamped_vol;
+                        }
+                    }
+                    None => {
+                        acc.insert(clamped_freq, clamped_vol);
                     }
                 }
-                None => {
-                    acc.insert(clamped_freq, clamped_vol);
-                }
-            }
 
-            acc
-        }))
+                acc
+            }))
     }
 }
