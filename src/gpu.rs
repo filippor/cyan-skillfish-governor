@@ -3,13 +3,9 @@ use crate::config::{GpuSetMethod, GpuUsageMethod};
 use cyan_skillfish_governor_smu::Bc250Smu;
 use libdrm_amdgpu_sys::{AMDGPU::DeviceHandle, PCI::BUS_INFO};
 use log::info;
+
 use std::{
-    collections::BTreeMap,
-    fs::File,
-    io::Error as IoError,
-    os::fd::AsRawFd,
-    path::{Path, PathBuf},
-    sync::Arc,
+    collections::BTreeMap, fs::File, io::Error as IoError, os::fd::AsRawFd, path::PathBuf,
     time::Duration,
 };
 
@@ -19,13 +15,6 @@ use kernel_freq_strategy::KernelFreqStrategy;
 #[path = "gpu/process_usage_strategy.rs"]
 mod process_usage_strategy;
 use process_usage_strategy::ProcessUsageStrategy;
-
-// cyan_skillfish.gfx1013.mmGRBM_STATUS
-const GRBM_STATUS_REG: u32 = 0x2004;
-// cyan_skillfish.gfx1013.mmGRBM_STATUS.GUI_ACTIVE
-const GPU_ACTIVE_BIT: u8 = 31;
-const EXPECTED_VENDOR_ID: &str = "0x1002";
-const EXPECTED_DEVICE_ID: &str = "0x13fe";
 
 trait FreqStrategy {
     fn change_freq(&mut self, freq: u32, vol: u32) -> Result<()>;
@@ -42,17 +31,8 @@ trait UsageStrategy {
     fn poll_and_get_load(&mut self) -> Result<(f32, u32)>;
 }
 
-struct SmuFreqStrategy {
-    smu: Bc250Smu,
-}
-struct BusyFlagUsageStrategy {
-    dev_handle: Arc<DeviceHandle>,
-    samples: u64,
-    sampling_interval: Duration,
-}
-
 pub struct GPU {
-    dev_handle: Arc<DeviceHandle>,
+    dev_handle: DeviceHandle,
     pub min_freq: u32,
     pub max_freq: u32,
     freq_strategy: Box<dyn FreqStrategy>,
@@ -73,82 +53,42 @@ impl GPU {
             dev: 0,
             func: 0,
         };
-        Self::validate_device_identity(&location)?;
-
-        let render_path = location.get_drm_render_path()?;
-        let dev_handle = Self::init_device_handle(&render_path)?;
+        validate_device_identity(&location)?;
+        info!(
+            "GPU usage method: {} set method: {}",
+            gpu_usage_method.as_config_value(),
+            gpu_set_method.as_config_value()
+        );
 
         let freq_strategy: Box<dyn FreqStrategy> = match gpu_set_method {
             GpuSetMethod::Smu => Box::new(SmuFreqStrategy::new()?),
             GpuSetMethod::Kernel => {
-                let gpu_sysfs_path = Self::resolve_gpu_sysfs_path(&render_path)?;
-                Box::new(KernelFreqStrategy::new(gpu_sysfs_path)?)
+                Box::new(KernelFreqStrategy::new(location.get_drm_render_path()?)?)
             }
         };
 
         let safe_points = freq_strategy.clamp_safe_points(safe_points)?;
-        let min_freq = *safe_points.first_key_value().unwrap().0;
-        let max_freq = *safe_points.last_key_value().unwrap().0;
 
         let usage_strategy: Box<dyn UsageStrategy> = match gpu_usage_method {
-            GpuUsageMethod::BusyFlag => Box::new(BusyFlagUsageStrategy {
-                dev_handle: Arc::clone(&dev_handle),
-                samples: 0,
+            GpuUsageMethod::BusyFlag => Box::new(BusyFlagUsageStrategy::new(
+                location.get_drm_render_path()?,
                 sampling_interval,
-            }),
+            )?),
             GpuUsageMethod::Process => Box::new(ProcessUsageStrategy {
-                render_node_path: render_path,
+                render_node_path: location.get_drm_render_path()?,
                 prev_gfx_time: None,
                 prev_time: None,
             }),
         };
 
         Ok(GPU {
-            dev_handle,
-            min_freq,
-            max_freq,
+            dev_handle: init_device_handle(location.get_drm_render_path()?)?,
+            min_freq: *safe_points.first_key_value().unwrap().0,
+            max_freq: *safe_points.last_key_value().unwrap().0,
             freq_strategy,
             usage_strategy,
             safe_points,
         })
-    }
-
-    fn validate_device_identity(location: &BUS_INFO) -> Result<()> {
-        let sysfs_path = location.get_sysfs_path();
-        let vendor = std::fs::read_to_string(sysfs_path.join("vendor"))?;
-        let device = std::fs::read_to_string(sysfs_path.join("device"))?;
-
-        if vendor.trim() == EXPECTED_VENDOR_ID && device.trim() == EXPECTED_DEVICE_ID {
-            return Ok(());
-        }
-
-        Err(AppError::from(
-            "Cyan Skillfish GPU not found at expected PCI bus location",
-        ))
-    }
-
-    fn init_device_handle(render_path: &Path) -> Result<Arc<DeviceHandle>> {
-        let card = File::open(render_path)?;
-        let (dev_handle, _, _) = DeviceHandle::init(card.as_raw_fd())
-            .map_err(|e| IoError::other(format!("DeviceHandle::init failed: {e}")))?;
-        Ok(Arc::new(dev_handle))
-    }
-
-    fn resolve_gpu_sysfs_path(render_path: &Path) -> Result<PathBuf> {
-        let render_name = render_path
-            .file_name()
-            .ok_or(IoError::other("render node path has no file name"))?;
-        let sysfs_device_path = Path::new("/sys/class/drm")
-            .join(render_name)
-            .join("device")
-            .canonicalize()
-            .map_err(|e| {
-                IoError::other(format!(
-                    "failed to resolve sysfs device path for render node {}: {e}",
-                    render_path.display()
-                ))
-            })?;
-        Ok(sysfs_device_path)
     }
 
     pub fn poll_and_get_load(&mut self) -> Result<(f32, u32)> {
@@ -185,6 +125,32 @@ impl GPU {
     }
 }
 
+const EXPECTED_VENDOR_ID: &str = "0x1002";
+const EXPECTED_DEVICE_ID: &str = "0x13fe";
+fn validate_device_identity(location: &BUS_INFO) -> Result<()> {
+    let sysfs_path = location.get_sysfs_path();
+    let vendor = std::fs::read_to_string(sysfs_path.join("vendor"))?;
+    let device = std::fs::read_to_string(sysfs_path.join("device"))?;
+
+    if vendor.trim() == EXPECTED_VENDOR_ID && device.trim() == EXPECTED_DEVICE_ID {
+        return Ok(());
+    }
+
+    Err(AppError::from(
+        "Cyan Skillfish GPU not found at expected PCI bus location",
+    ))
+}
+
+fn init_device_handle(render_path: PathBuf) -> Result<DeviceHandle> {
+    let card = File::open(render_path)?;
+    let (dev_handle, _, _) = DeviceHandle::init(card.as_raw_fd())
+        .map_err(|e| IoError::other(format!("DeviceHandle::init failed: {e}")))?;
+    Ok(dev_handle)
+}
+struct SmuFreqStrategy {
+    smu: Bc250Smu,
+}
+
 impl SmuFreqStrategy {
     fn new() -> Result<Self> {
         let smu = Bc250Smu::new("0000:00:00.0", true, true, 500)?;
@@ -215,6 +181,25 @@ impl FreqStrategy for SmuFreqStrategy {
     }
 }
 
+struct BusyFlagUsageStrategy {
+    dev_handle: DeviceHandle,
+    samples: u64,
+    sampling_interval: Duration,
+}
+
+impl BusyFlagUsageStrategy {
+    fn new(render_path: PathBuf, sampling_interval: Duration) -> Result<Self> {
+        Ok(Self {
+            dev_handle: init_device_handle(render_path)?,
+            samples: 0,
+            sampling_interval,
+        })
+    }
+}
+// cyan_skillfish.gfx1013.mmGRBM_STATUS
+const GRBM_STATUS_REG: u32 = 0x2004;
+// cyan_skillfish.gfx1013.mmGRBM_STATUS.GUI_ACTIVE
+const GPU_ACTIVE_BIT: u8 = 31;
 impl UsageStrategy for BusyFlagUsageStrategy {
     fn poll_and_get_load(&mut self) -> Result<(f32, u32)> {
         for _ in 0..65 {

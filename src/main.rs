@@ -11,7 +11,7 @@ use log::{debug, error, info};
 use signal_hook::consts::signal::*;
 use signal_hook::iterator::Signals;
 use std::sync::mpsc::{self, Sender, TryRecvError};
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 const UP_EVENTS: i16 = 2;
 const BUILD_VERSION: &str = env!("GIT_VERSION");
@@ -32,16 +32,13 @@ fn main() -> Result<()> {
     let (shutdown_tx, shutdown_rx) = mpsc::channel::<()>();
     install_signal_handler(shutdown_tx)?;
     let config = load_config(args.config_path.as_deref())?;
-    let mut gpu_usage_fix = start_gpu_usage_fix(config.gpu_usage.fix_metrics)?;
 
-    info!(
-        "GPU usage method configured: {}",
-        config.gpu_usage.method.as_config_value()
-    );
-    info!(
-        "GPU set method configured: {}",
-        config.gpu.set_method.as_config_value()
-    );
+    let mut gpu_usage_fix = if config.gpu_usage.fix_metrics {
+        info!("GPU usage metrics fix enabled");
+        Some(GpuUsageFix::start()?)
+    } else {
+        None
+    };
 
     let mut gpu = GPU::new(
         config.safe_points,
@@ -69,8 +66,8 @@ fn main() -> Result<()> {
             Ok(()) | Err(TryRecvError::Disconnected) => break,
             Err(TryRecvError::Empty) => {}
         }
-
         let loop_start = Instant::now();
+
         let (average_load, burst_length) = gpu.poll_and_get_load()?;
 
         flush_gpu_usage_fix(
@@ -114,8 +111,8 @@ fn main() -> Result<()> {
         let hit_bounds = target_freq == gpu.min_freq || target_freq == max_freq;
         let big_change =
             curr_freq.abs_diff(target_freq) >= config.frequency_thresholds.significant_change;
-        let should_apply_change = curr_freq != target_freq && (burst || hit_bounds || big_change);
 
+        let should_apply_change = curr_freq != target_freq && (burst || hit_bounds || big_change);
         if should_apply_change {
             debug!(
                 "freq curr {} target {} temp {} status {} de {} load {:.2} bl {}",
@@ -133,12 +130,21 @@ fn main() -> Result<()> {
             curr_freq = target_freq;
         }
 
-        sleep_remaining(loop_start, config.timing.adjustment_interval);
+        let elapsed = loop_start.elapsed();
+        if elapsed < config.timing.adjustment_interval {
+            std::thread::sleep(config.timing.adjustment_interval - elapsed);
+        }
     }
 
     info!("Shutting down gracefully...");
-    shutdown_gpu_usage_fix(gpu_usage_fix.as_mut());
-    shutdown_gpu(&mut gpu);
+    if let Some(mut fix) = gpu_usage_fix
+        && let Err(err) = fix.shutdown()
+    {
+        error!("GPU usage metrics fix cleanup failed: {err}");
+    }
+    if let Err(err) = gpu.shutdown() {
+        error!("System exit restore failed: {err}");
+    }
     Ok(())
 }
 
@@ -166,15 +172,6 @@ fn load_config(config_path: Option<&str>) -> Result<Config> {
         .map(std::fs::read_to_string)
         .unwrap_or_else(|| Ok(String::new()));
     Config::new(config_text)
-}
-
-fn start_gpu_usage_fix(enabled: bool) -> Result<Option<GpuUsageFix>> {
-    if enabled {
-        Ok(Some(GpuUsageFix::start()?))
-    } else {
-        info!("GPU usage metrics fix disabled by config");
-        Ok(None)
-    }
 }
 
 fn flush_gpu_usage_fix(
@@ -228,27 +225,6 @@ fn update_max_freq_for_temperature(
     }
 
     Ok(temp)
-}
-
-fn sleep_remaining(loop_start: Instant, adjustment_interval: Duration) {
-    let elapsed = loop_start.elapsed();
-    if elapsed < adjustment_interval {
-        std::thread::sleep(adjustment_interval - elapsed);
-    }
-}
-
-fn shutdown_gpu_usage_fix(gpu_usage_fix: Option<&mut GpuUsageFix>) {
-    if let Some(fix) = gpu_usage_fix
-        && let Err(err) = fix.shutdown()
-    {
-        error!("GPU usage metrics fix cleanup failed: {err}");
-    }
-}
-
-fn shutdown_gpu(gpu: &mut GPU) {
-    if let Err(err) = gpu.shutdown() {
-        error!("System exit restore failed: {err}");
-    }
 }
 
 #[cfg(test)]
