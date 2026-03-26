@@ -3,6 +3,7 @@ name = "cyan-skillfish-governor-smu"
 version = "0.2.0"
 license = "MIT"
 edition = "2024"
+build = "build.rs"
 
 [dependencies]
 libdrm_amdgpu_sys = "0.8.8"

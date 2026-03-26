@@ -14,9 +14,10 @@ use std::sync::mpsc::{self, Sender, TryRecvError};
 use std::time::{Duration, Instant};
 
 const UP_EVENTS: i16 = 2;
+const BUILD_VERSION: &str = env!("GIT_VERSION");
 
 #[derive(Debug, Parser)]
-#[command(name = "cyan-skillfish-governor-smu")]
+#[command(name = "cyan-skillfish-governor-smu", version = BUILD_VERSION)]
 struct Args {
     #[arg(short, long)]
     verbose: bool,
