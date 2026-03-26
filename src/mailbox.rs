@@ -1,4 +1,4 @@
-use crate::error::{Result, SmuError};
+use crate::smu_errors::{Result, SmuError};
 use crate::transport::Bc250PciTransport;
 use std::sync::Mutex;
 

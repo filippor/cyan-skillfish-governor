@@ -1,8 +1,8 @@
 use super::UsageStrategy;
+use crate::app_error::Result;
 use std::{
     collections::HashSet,
     fs,
-    io::Error as IoError,
     path::{Path, PathBuf},
     time::Instant,
 };
@@ -72,7 +72,9 @@ fn get_total_gfx_time_from_fdinfo(render_node_path: &Path) -> u64 {
             };
 
             // Skip header lines before drm-client-id.
-            let mut lines = content.lines().skip_while(|l| !l.starts_with("drm-client-id"));
+            let mut lines = content
+                .lines()
+                .skip_while(|l| !l.starts_with("drm-client-id"));
             let Some(cid_line) = lines.next() else {
                 continue;
             };
@@ -112,7 +114,7 @@ fn get_total_gfx_time_from_fdinfo(render_node_path: &Path) -> u64 {
 }
 
 impl UsageStrategy for ProcessUsageStrategy {
-    fn poll_and_get_load(&mut self) -> Result<(f32, u32), IoError> {
+    fn poll_and_get_load(&mut self) -> Result<(f32, u32)> {
         let current_gfx_time = get_total_gfx_time_from_fdinfo(&self.render_node_path);
         let current_time = Instant::now();
 

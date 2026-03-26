@@ -1,11 +1,11 @@
 mod api;
 mod codec;
-mod error;
 mod mailbox;
+mod smu_errors;
 mod transport;
 
 pub use codec::{decode_u32, mv_to_vid, pack_f32, pack_s16, pack_u32, vid_to_mv};
-pub use error::{Result, SmuError};
+pub use smu_errors::{Result, SmuError};
 
 use mailbox::{Bc250Mailbox, SmuStatus};
 use std::collections::HashMap;
@@ -121,7 +121,7 @@ impl Bc250Smu {
             self.send_message(3, 0x01, value, None, Some(pack_u32), Some(decode_u32), true)?;
 
         if response != value + 1 {
-            return Err(crate::error::SmuError::TestMessageFailed {
+            return Err(crate::smu_errors::SmuError::TestMessageFailed {
                 expected: value + 1,
                 actual: response,
             });
