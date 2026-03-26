@@ -5,7 +5,7 @@ use std::{
     collections::BTreeMap,
     fs::File,
     io::{Error as IoError, Write},
-    path::PathBuf,
+    path::{Path, PathBuf},
 };
 
 pub(super) struct KernelFreqStrategy {
@@ -15,7 +15,8 @@ pub(super) struct KernelFreqStrategy {
 }
 
 impl KernelFreqStrategy {
-    pub(super) fn new(gpu_sysfs_path: PathBuf) -> Result<Self> {
+    pub(super) fn new(render_path: PathBuf) -> Result<Self> {
+        let gpu_sysfs_path = Self::resolve_gpu_sysfs_path(&render_path)?;
         let pp_od_clk_voltage_path = gpu_sysfs_path.join("pp_od_clk_voltage");
         let pp_file = std::fs::OpenOptions::new()
             .write(true)
@@ -26,6 +27,22 @@ impl KernelFreqStrategy {
             dpm_sclk,
             pp_od_clk_voltage_path,
         })
+    }
+    fn resolve_gpu_sysfs_path(render_path: &Path) -> Result<PathBuf> {
+        let render_name = render_path
+            .file_name()
+            .ok_or(IoError::other("render node path has no file name"))?;
+        let sysfs_device_path = Path::new("/sys/class/drm")
+            .join(render_name)
+            .join("device")
+            .canonicalize()
+            .map_err(|e| {
+                IoError::other(format!(
+                    "failed to resolve sysfs device path for render node {}: {e}",
+                    render_path.display()
+                ))
+            })?;
+        Ok(sysfs_device_path)
     }
 }
 
