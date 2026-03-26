@@ -266,7 +266,7 @@ impl Bc250Smu {
 
     pub fn set_cpu_vid_offset(&self, offset: i8) -> Result<()> {
         if offset < -5 || offset > 5 {
-            return Err(crate::error::SmuError::Io(std::io::Error::new(
+            return Err(crate::smu_errors::SmuError::Io(std::io::Error::new(
                 std::io::ErrorKind::InvalidInput,
                 "Offset must be in range -5 to 5",
             )));
@@ -277,7 +277,7 @@ impl Bc250Smu {
 
     pub fn set_gfx_vid_offset(&self, offset: i8) -> Result<()> {
         if offset < -5 || offset > 5 {
-            return Err(crate::error::SmuError::Io(std::io::Error::new(
+            return Err(crate::smu_errors::SmuError::Io(std::io::Error::new(
                 std::io::ErrorKind::InvalidInput,
                 "Offset must be in range -5 to 5",
             )));

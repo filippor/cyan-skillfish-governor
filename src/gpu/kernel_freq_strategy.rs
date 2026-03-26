@@ -1,4 +1,6 @@
 use super::FreqStrategy;
+use crate::app_error::Result;
+use log::warn;
 use std::{
     collections::BTreeMap,
     fs::File,
@@ -13,7 +15,7 @@ pub(super) struct KernelFreqStrategy {
 }
 
 impl KernelFreqStrategy {
-    pub(super) fn new(gpu_sysfs_path: PathBuf) -> Result<Self, IoError> {
+    pub(super) fn new(gpu_sysfs_path: PathBuf) -> Result<Self> {
         let pp_od_clk_voltage_path = gpu_sysfs_path.join("pp_od_clk_voltage");
         let pp_file = std::fs::OpenOptions::new()
             .write(true)
@@ -28,7 +30,7 @@ impl KernelFreqStrategy {
 }
 
 impl FreqStrategy for KernelFreqStrategy {
-    fn change_freq(&mut self, freq: u32, vol: u32) -> Result<(), IoError> {
+    fn change_freq(&mut self, freq: u32, vol: u32) -> Result<()> {
         let cmd = format!("vc 0 {freq} {vol}");
         self.pp_file.write_all(cmd.as_bytes()).map_err(|e| {
             IoError::other(format!("writing '{cmd}' to pp_od_clk_voltage failed: {e}"))
@@ -41,7 +43,7 @@ impl FreqStrategy for KernelFreqStrategy {
         Ok(())
     }
 
-    fn get_freq(&self) -> Result<u32, IoError> {
+    fn get_freq(&self) -> Result<u32> {
         let content = std::fs::read_to_string(&self.dpm_sclk)?;
 
         let line = content
@@ -61,16 +63,11 @@ impl FreqStrategy for KernelFreqStrategy {
         Ok(freq_mhz)
     }
 
-    fn clamp_safe_points(
-        &self,
-        safe_points: BTreeMap<u32, u32>,
-    ) -> Result<BTreeMap<u32, u32>, IoError> {
+    fn clamp_safe_points(&self, safe_points: BTreeMap<u32, u32>) -> Result<BTreeMap<u32, u32>> {
         let content = match std::fs::read_to_string(&self.pp_od_clk_voltage_path) {
             Ok(c) => c,
             Err(e) => {
-                eprintln!(
-                    "warning: could not read pp_od_clk_voltage for SCLK limits ({e}), skipping clamp"
-                );
+                warn!("could not read pp_od_clk_voltage for SCLK limits ({e}), skipping clamp");
                 return Ok(safe_points);
             }
         };
@@ -82,7 +79,7 @@ impl FreqStrategy for KernelFreqStrategy {
                 .filter_map(|t| t.strip_suffix("Mhz")?.parse::<u32>().ok());
             Some((vals.next()?, vals.next()?))
         }) else {
-            eprintln!("warning: SCLK limits not found in pp_od_clk_voltage, skipping clamp");
+            warn!("SCLK limits not found in pp_od_clk_voltage, skipping clamp");
             return Ok(safe_points);
         };
 
@@ -98,16 +95,14 @@ impl FreqStrategy for KernelFreqStrategy {
         });
 
         if vddc_limits.is_none() {
-            eprintln!(
-                "warning: VDDC limits not found in pp_od_clk_voltage, skipping voltage clamp"
-            );
+            warn!("VDDC limits not found in pp_od_clk_voltage, skipping voltage clamp");
         }
 
         Ok(safe_points.into_iter().fold(BTreeMap::new(), |mut acc, (freq, vol)| {
             let clamped_freq = freq.clamp(sclk_min, sclk_max);
             if clamped_freq != freq {
-                eprintln!(
-                    "warning: clamping safe point frequency {}Mhz -> {}Mhz (SCLK range {}-{}Mhz)",
+                warn!(
+                    "clamping safe point frequency {}Mhz -> {}Mhz (SCLK range {}-{}Mhz)",
                     freq, clamped_freq, sclk_min, sclk_max
                 );
             }
@@ -115,8 +110,8 @@ impl FreqStrategy for KernelFreqStrategy {
             let clamped_vol = if let Some((vddc_min, vddc_max)) = vddc_limits {
                 let clamped = vol.clamp(vddc_min, vddc_max);
                 if clamped != vol {
-                    eprintln!(
-                        "warning: clamping safe point voltage {}mV -> {}mV (VDDC range {}-{}mV)",
+                    warn!(
+                        "clamping safe point voltage {}mV -> {}mV (VDDC range {}-{}mV)",
                         vol, clamped, vddc_min, vddc_max
                     );
                 }

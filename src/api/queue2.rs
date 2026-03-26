@@ -30,7 +30,7 @@ impl Bc250Smu {
 
         let end = bytes.iter().position(|&b| b == 0).unwrap_or(bytes.len());
         String::from_utf8(bytes[..end].to_vec()).map_err(|e| {
-            crate::error::SmuError::Io(std::io::Error::new(std::io::ErrorKind::InvalidData, e))
+            crate::smu_errors::SmuError::Io(std::io::Error::new(std::io::ErrorKind::InvalidData, e))
         })
     }
 
