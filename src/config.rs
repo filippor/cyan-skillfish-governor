@@ -7,8 +7,6 @@ use std::{
 };
 use toml::Table;
 
-type ValueResult<T> = std::result::Result<T, &'static str>;
-
 #[derive(Clone, Copy, Debug)]
 pub enum GpuUsageMethod {
     BusyFlag,
@@ -106,55 +104,61 @@ fn parse_timing_config(config: &Table) -> TimingConfig {
     let timing = config.get("timing").and_then(|t| t.as_table());
     let intervals = nested_table(timing, "intervals");
 
-    let sampling_interval = parse_integer_in_range_or_default(
+    let sampling_interval = parse_integer_in_range_optional(
         intervals,
         "sample",
         "timing.intervals.sample",
         1..=i64::from(u32::MAX),
-        2000,
-    );
+        Some(2000),
+    )
+    .unwrap() as u32;
 
     let adjustment_interval_default = i64::from(sampling_interval) * 10;
-    let adjustment_interval = parse_integer_in_range_or_default(
+    let adjustment_interval = parse_integer_in_range_optional(
         intervals,
         "adjust",
         "timing.intervals.adjust",
         i64::from(sampling_interval)..=i64::MAX,
-        adjustment_interval_default,
-    ) as u64;
+        Some(adjustment_interval_default),
+    )
+    .unwrap() as u64;
 
     let burst_samples = parse_optional_integer_clamped(
         timing,
         "burst-samples",
         "timing.burst-samples",
         1..=64,
+        None,
     );
 
     const I16_MAX: i64 = i16::MAX as i64;
-    let down_events = parse_integer_in_range_or_default(
+    let down_events = parse_integer_in_range_optional(
         timing,
         "down-events",
         "timing.down-events",
         0..=I16_MAX,
-        10,
-    ) as i16;
+        Some(10),
+    )
+    .unwrap() as i16;
 
     let ramp_rates = nested_table(timing, "ramp-rates");
-    let ramp_rate = parse_float_in_range_or_default(
+    let ramp_rate = parse_float_in_range_optional(
         ramp_rates,
         "normal",
         "timing.ramp-rates.normal",
         0.0..=f64::MAX,
-        1.0,
-    ) as f32;
+        Some(1.0),
+    )
+    .unwrap() as f32;
 
-    let ramp_rate_burst = parse_float_in_range_or_default(
+    let ramp_rate_burst = parse_float_in_range_optional(
         ramp_rates,
         "burst",
         "timing.ramp-rates.burst",
         0.0..=f64::MAX,
-        (200.0 * ramp_rate) as f64,
-    ) as f32;
+        Some((200.0 * ramp_rate) as f64),
+    )
+    .unwrap() as f32;
 
     let ramp_rate_burst = if ramp_rate_burst <= ramp_rate {
         warn!(
@@ -180,29 +184,36 @@ fn parse_significant_change(config: &Table) -> u32 {
         .get("frequency-thresholds")
         .and_then(|t| t.as_table());
 
-    parse_integer_in_range_or_default(
+    parse_integer_in_range_optional(
         freq_threshs,
         "adjust",
         "frequency-thresholds.adjust",
         1..=i64::from(u32::MAX),
-        10,
-    ) as u32
+        Some(10),
+    )
+    .unwrap() as u32
 }
 
 fn parse_load_target_config(config: &Table) -> LoadTargetConfig {
     let load_threshs = config.get("load-target").and_then(|t| t.as_table());
 
-    let up_thresh =
-        parse_float_in_range_or_default(load_threshs, "upper", "load-target.upper", 0.0..1.0, 0.95)
-            as f32;
+    let up_thresh = parse_float_in_range_optional(
+        load_threshs,
+        "upper",
+        "load-target.upper",
+        0.0..1.0,
+        Some(0.95),
+    )
+    .unwrap();
 
-    let down_thresh = parse_float_in_range_or_default(
+    let down_thresh = parse_float_in_range_optional(
         load_threshs,
         "lower",
         "load-target.lower",
         0.0..1.0,
-        (up_thresh - 0.15).max(0.0) as f64,
-    ) as f32;
+        Some((up_thresh - 0.15).max(0.0)),
+    )
+    .unwrap();
 
     let down_thresh = if down_thresh > up_thresh {
         warn!("load-target.lower can't be greater than load-target.upper, clamping");
@@ -212,8 +223,8 @@ fn parse_load_target_config(config: &Table) -> LoadTargetConfig {
     };
 
     LoadTargetConfig {
-        up_thresh,
-        down_thresh,
+        up_thresh: up_thresh as f32,
+        down_thresh: down_thresh as f32,
     }
 }
 
@@ -319,16 +330,19 @@ fn parse_temperature_config(config: &Table) -> TemperatureConfig {
         "throttling",
         "temperature.throttling",
         0..=110,
+        Some(85),
     );
 
     let throttling_recovery_temp = throttling_temp.and_then(|max_recovery| {
         let max_allowed = i64::from(max_recovery.saturating_sub(1));
-        parse_optional_integer_in_range_or_missing(
+        parse_integer_in_range_optional(
             temperature,
             "throttling_recovery",
             "temperature.throttling_recovery",
-            1..=max_allowed
-        ).map(|v| v as u32)
+            1..=max_allowed,
+            None,
+        )
+        .map(|v| v as u32)
     });
 
     TemperatureConfig {
@@ -356,13 +370,14 @@ fn parse_gpu_usage_config(config: &Table) -> GpuUsageConfig {
             true
         });
 
-    let gpu_metric_fix_flush_every = parse_integer_in_range_or_default(
+    let gpu_metric_fix_flush_every = parse_integer_in_range_optional(
         gpu_usage,
         "flush-every",
         "gpu-usage.flush-every",
         1..=i64::from(u32::MAX),
-        10,
-    ) as u32;
+        Some(10),
+    )
+    .unwrap() as u32;
 
     let gpu_usage_method = match gpu_usage
         .and_then(|t| t.get("method"))
@@ -410,14 +425,14 @@ fn nested_table<'a>(table: Option<&'a Table>, key: &str) -> Option<&'a Table> {
         .and_then(|value| value.as_table())
 }
 
-fn integer_value(table: Option<&Table>, key: &str) -> ValueResult<i64> {
+fn integer_value(table: Option<&Table>, key: &str) -> std::result::Result<i64, &'static str> {
     table
         .and_then(|t| t.get(key))
         .ok_or("is missing")
         .and_then(|value| value.as_integer().ok_or("must be an integer"))
 }
 
-fn number_value(table: Option<&Table>, key: &str) -> ValueResult<f64> {
+fn number_value(table: Option<&Table>, key: &str) -> std::result::Result<f64, &'static str> {
     integer_value(table, key)
         .map(|value| value as f64)
         .or_else(|_| {
@@ -433,46 +448,24 @@ fn number_value(table: Option<&Table>, key: &str) -> ValueResult<f64> {
         })
 }
 
-
-
-macro_rules! impl_parse_in_range_or_default {
-    ($func_name:ident, $optional_getter:ident, $type:ty) => {
-        fn $func_name<R: std::ops::RangeBounds<$type> + std::fmt::Debug>(
-            table: Option<&Table>,
-            key: &str,
-            config_key: &str,
-            range: R,
-            default: $type,
-        ) -> $type {
-            $optional_getter(table, key, config_key, &range).unwrap_or(default)
-        }
-    };
-}
-
-impl_parse_in_range_or_default!(parse_integer_in_range_or_default, parse_integer_in_range_optional, i64);
-impl_parse_in_range_or_default!(parse_float_in_range_or_default, parse_float_in_range_optional, f64);
-
-
-fn parse_optional_integer_in_range_or_missing<R: std::ops::RangeBounds<i64> + std::fmt::Debug>(
-    table: Option<&Table>,
-    key: &str,
-    config_key: &str,
-    range: R,
-) -> Option<i64> {
-    parse_integer_in_range_optional(table, key, config_key, &range).or_else(|| {
-        warn!("{} is missing", config_key);
-        None
-    })
-       
-}
-
-
 fn parse_optional_integer_clamped<R: std::ops::RangeBounds<i64> + std::fmt::Debug>(
     table: Option<&Table>,
     key: &str,
     config_key: &str,
     range: R,
+    default: Option<u32>,
 ) -> Option<u32> {
+    let is_missing = table.and_then(|t| t.get(key)).is_none();
+    if is_missing {
+        warn!(
+            "{} is missing {}",
+            config_key,
+            default
+                .map(|d| format!(", using default {d}"))
+                .unwrap_or_else(|| ", disabled".into())
+        );
+        return default;
+    }
     match integer_value(table, key) {
         Ok(v) if range.contains(&v) => Some(v as u32),
         Ok(v) if v < 0 => {
@@ -517,33 +510,53 @@ macro_rules! impl_parse_in_range_optional {
             table: Option<&Table>,
             key: &str,
             config_key: &str,
-            range: &R,
+            range: R,
+            default: Option<$type>,
         ) -> Option<$type> {
+            let is_missing = table.and_then(|t| t.get(key)).is_none();
+            if is_missing {
+                warn!(
+                    "{} is missing {}",
+                    config_key,
+                    default
+                        .map(|d| format!(", using default {d}"))
+                        .unwrap_or_else(|| ", disabled".to_string())
+                );
+                return default;
+            }
             match $value_getter(table, key) {
                 Ok(v) if range.contains(&v) => Some(v),
                 Ok(v) => {
-                    warn!("{} = {} must be between {} and {}", config_key, v, range_min(range), range_max(range));
-                    None
+                    warn!(
+                        "{} = {} must be between {} and {}, using default value of {}",
+                        config_key,
+                        v,
+                        range_min(&range),
+                        range_max(&range),
+                        default
+                            .map(|d| format!("{d}"))
+                            .unwrap_or_else(|| "none".to_string())
+                    );
+                    default
                 }
                 Err(s) => {
-                    warn!("{} = {}", config_key, s);
-                    None
+                    warn!(
+                        "{} = {}, using default value of {}",
+                        config_key,
+                        s,
+                        default
+                            .map(|d| format!("{d}"))
+                            .unwrap_or_else(|| "none".to_string())
+                    );
+                    default
                 }
             }
         }
     };
 }
 
-impl_parse_in_range_optional!(
-    parse_integer_in_range_optional,
-    integer_value,
-    i64
-);
-impl_parse_in_range_optional!(
-    parse_float_in_range_optional,
-    number_value,
-    f64
-);
+impl_parse_in_range_optional!(parse_integer_in_range_optional, integer_value, i64);
+impl_parse_in_range_optional!(parse_float_in_range_optional, number_value, f64);
 
 fn range_min<T, R>(range: &R) -> String
 where
@@ -588,7 +601,7 @@ mod tests {
         assert!((cfg.load_target.up_thresh - 0.95).abs() < f32::EPSILON);
         assert!((cfg.load_target.down_thresh - 0.80).abs() < f32::EPSILON);
         assert_eq!(cfg.frequency_thresholds.significant_change, 10);
-        assert_eq!(cfg.temperature.throttling_temp, None);
+        assert_eq!(cfg.temperature.throttling_temp, Some(85));
         assert_eq!(cfg.gpu_usage.fix_metrics, true);
         assert_eq!(cfg.gpu_usage.flush_every, 10);
         assert!(matches!(cfg.gpu_usage.method, GpuUsageMethod::BusyFlag));
@@ -752,7 +765,6 @@ mod tests {
         assert_eq!(config.timing.burst_samples, Some(50));
     }
 
-    
     #[test]
     fn parse_optional_integer_clamped_returns_value_when_in_range() {
         let config_text = r#"
@@ -784,9 +796,9 @@ mod tests {
     }
 
     #[test]
-    fn parse_optional_integer_clamped_returns_none_when_missing() {
+    fn parse_optional_integer_clamped_returns_default_when_missing() {
         let config_text = "";
         let config = parse_config(config_text);
-        assert_eq!(config.temperature.throttling_temp, None);
+        assert_eq!(config.temperature.throttling_temp, Some(85));
     }
 }
