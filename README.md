@@ -154,19 +154,24 @@ For a manual run test with an explicit config file:
 Before enabling at boot, test one manual start and check logs:
 
 ```bash
-sudo systemctl start cyan-skillfish-governor-smu
+systemctl start cyan-skillfish-governor-smu
 ```
 
 After that, run a real GPU workload (for example a benchmark or a game) for a few minutes and re-check service logs to confirm expected behavior under load.
 check log
 ```bash
-sudo systemctl status cyan-skillfish-governor-smu
+systemctl status cyan-skillfish-governor-smu
 sudo journalctl -u cyan-skillfish-governor-smu -n 100 --no-pager
 ```
 If everything looks good, then enable it:
 
 ```bash
-sudo systemctl enable cyan-skillfish-governor-smu
+systemctl enable cyan-skillfish-governor-smu
+```
+
+after configuration change restart the service with 
+```bash
+systemctl restart cyan-skillfish-governor-smu
 ```
 
 ## Configuration
@@ -175,7 +180,7 @@ Top-level keys:
 
 - `gpu-usage` (also accepts legacy `gpu_usage`)
   - `fix-metrics` (bool, default: `true`): enable GPU usage metrics patching.
-  - `method` (`"busy-flag"` or `"process"`, default: `"busy-flag"`): how load is sampled.
+  - `method` (`"busy-flag"` or `"process"`, default: `"busy-flag"`): how load is sampled proces is more CPU intensive scan all process that use GPU.
   - `flush-every` (integer, default: `10`): flush patched metrics every N update cycles.
 
 - `gpu`
@@ -222,6 +227,11 @@ Use [default-config.toml](default-config.toml) as a baseline profile.
 ## Performance Mode Script
 the configuration 
 `dbus.enabled` need to be true to works
+
+performance mode 
+ set frequency to max,
+ reduce checking rate of load calculation if `gpu-usage.fix-metrics` is disabled skip completely the calculation of gpu load,
+ the thermal trottling remain active
 
 It controls performance mode over system D-Bus using interface:
 - Service: `com.cyan.SkillFishGovernor`

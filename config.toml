@@ -11,6 +11,9 @@ flush-every = 10
 [gpu]
 set-method = "kernel"  # "smu" or "kernel"
 
+[dbus]
+enabled = true
+
 # MHz/ms
 [timing.ramp-rates]
 normal = 1
