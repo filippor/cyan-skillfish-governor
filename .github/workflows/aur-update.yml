@@ -1,0 +1,135 @@
+name: Update AUR Package
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to publish to AUR (e.g. v0.3.5 or 0.3.5)"
+        required: true
+        type: string
+
+jobs:
+  update-aur:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Prepare variables
+        id: vars
+        env:
+          INPUT_TAG: ${{ github.event.inputs.tag }}
+        run: |
+          set -euo pipefail
+          if [ "${GITHUB_EVENT_NAME}" = "workflow_dispatch" ]; then
+            tag="${INPUT_TAG}"
+            if [[ "${tag}" != v* ]]; then
+              tag="v${tag}"
+            fi
+          else
+            tag="${GITHUB_REF_NAME}"
+          fi
+          version="${tag#v}"
+          tarball_url="https://github.com/${GITHUB_REPOSITORY}/archive/refs/tags/${tag}.tar.gz"
+          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          echo "tarball_url=${tarball_url}" >> "$GITHUB_OUTPUT"
+
+      - name: Set up SSH for AUR
+        env:
+          AUR_SSH_PRIVATE_KEY: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          test -n "${AUR_SSH_PRIVATE_KEY}"
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          printf '%s\n' "${AUR_SSH_PRIVATE_KEY}" > ~/.ssh/aur
+          chmod 600 ~/.ssh/aur
+          ssh-keyscan aur.archlinux.org >> ~/.ssh/known_hosts
+          chmod 644 ~/.ssh/known_hosts
+          {
+            echo "Host aur.archlinux.org"
+            echo "  IdentityFile ~/.ssh/aur"
+            echo "  User aur"
+            echo "  StrictHostKeyChecking yes"
+          } >> ~/.ssh/config
+
+      - name: Clone AUR repository
+        run: |
+          set -euo pipefail
+          git clone ssh://aur@aur.archlinux.org/cyan-skillfish-governor-smu.git aur
+
+      - name: Update PKGBUILD
+        working-directory: aur
+        env:
+          VERSION: ${{ steps.vars.outputs.version }}
+          TAG: ${{ steps.vars.outputs.tag }}
+          TARBALL_URL: ${{ steps.vars.outputs.tarball_url }}
+        run: |
+          set -euo pipefail
+
+          tmp_tar="$(mktemp)"
+          trap 'rm -f "${tmp_tar}"' EXIT
+          curl -fsSL "${TARBALL_URL}" -o "${tmp_tar}"
+          b2="$(b2sum "${tmp_tar}" | awk '{print $1}')"
+
+          sed -i -E "s/^pkgver=.*/pkgver=${VERSION}/" PKGBUILD
+          sed -i -E "s/^pkgrel=.*/pkgrel=1/" PKGBUILD
+          sed -i -E "s/^tag=.*/tag=v\${pkgver}/" PKGBUILD
+          sed -i -E "s|^source=\(.*|source=(\"https://github.com/${GITHUB_REPOSITORY}/archive/refs/tags/${TAG}.tar.gz\")|" PKGBUILD
+          sed -i -E "s/^b2sums=\(.*/b2sums=('${b2}')/" PKGBUILD
+
+      - name: Regenerate .SRCINFO in Arch container
+        run: |
+          set -euo pipefail
+          docker run --rm -v "$PWD/aur:/pkg" -w /pkg archlinux:latest bash -lc '
+            pacman -Sy --noconfirm --needed base-devel
+            useradd -m builder
+
+            # Work on a container-local copy so we do not alter ownership of the mounted repo.
+            cp -a /pkg /tmp/pkg
+            chown -R builder:builder /tmp/pkg
+            cd /tmp/pkg
+            su builder -c "makepkg --printsrcinfo > .SRCINFO"
+
+            # Write only the generated metadata back to the mounted repository.
+            cp /tmp/pkg/.SRCINFO /pkg/.SRCINFO
+          '
+
+      - name: Commit and push changes
+        working-directory: aur
+        env:
+          AUR_GIT_USER_NAME: ${{ secrets.AUR_GIT_USER_NAME }}
+          AUR_GIT_USER_EMAIL: ${{ secrets.AUR_GIT_USER_EMAIL }}
+          VERSION: ${{ steps.vars.outputs.version }}
+        run: |
+          set -euo pipefail
+
+          git config user.name "${AUR_GIT_USER_NAME:-github-actions[bot]}"
+          git config user.email "${AUR_GIT_USER_EMAIL:-41898282+github-actions[bot]@users.noreply.github.com}"
+
+          target_branch="$(git symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null | sed 's@^origin/@@' || true)"
+          if [ -z "${target_branch}" ]; then
+            if git show-ref --verify --quiet refs/remotes/origin/master; then
+              target_branch="master"
+            elif git show-ref --verify --quiet refs/remotes/origin/main; then
+              target_branch="main"
+            else
+              target_branch="master"
+            fi
+          fi
+          echo "Using AUR target branch: ${target_branch}"
+
+          git add PKGBUILD .SRCINFO
+          if git diff --cached --quiet; then
+            echo "No AUR changes detected; nothing to push."
+            exit 0
+          fi
+
+          git commit -m "Update to v${VERSION}"
+          git pull --rebase origin "${target_branch}"
+          git push origin "HEAD:${target_branch}"
