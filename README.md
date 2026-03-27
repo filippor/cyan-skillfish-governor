@@ -225,13 +225,14 @@ Top-level keys:
 Use [default-config.toml](default-config.toml) as a baseline profile.
 
 ## Performance Mode Script
-the configuration 
-`dbus.enabled` need to be true to works
+The configuration option `dbus.enabled` must be set to `true`.
 
-performance mode 
- set frequency to max,
- reduce checking rate of load calculation if `gpu-usage.fix-metrics` is disabled skip completely the calculation of gpu load,
- the thermal trottling remain active
+Performance mode:
+- sets frequency to max by default,
+- reduces load-check overhead (and skips load calculation entirely when `gpu-usage.fix-metrics` is disabled),
+- keeps thermal throttling active.
+
+You can also set a fixed frequency while in performance mode with `--fixed-frequency <MHz>`.
 
 It controls performance mode over system D-Bus using interface:
 - Service: `com.cyan.SkillFishGovernor`
@@ -249,6 +250,7 @@ Prerequisites:
 
 ```bash
 cyan-skillfish-performance-mode --on
+cyan-skillfish-performance-mode --fixed-frequency 1200
 cyan-skillfish-performance-mode --off
 cyan-skillfish-performance-mode --status
 ```
@@ -257,12 +259,20 @@ cyan-skillfish-performance-mode --status
 
 ```bash
 cyan-skillfish-performance-mode mangohud %command%
+cyan-skillfish-performance-mode --fixed-frequency 1200 mangohud %command%
 ```
 
 3. Steam launch option example:
 
 ```bash
 cyan-skillfish-performance-mode %command%
+cyan-skillfish-performance-mode --fixed-frequency 1200 %command%
+```
+
+If needed, you can pass `--` before the wrapped command:
+
+```bash
+cyan-skillfish-performance-mode --fixed-frequency 1200 -- mangohud %command%
 ```
 
 In wrapper mode, the script installs a cleanup trap, so performance mode is disabled when the wrapped process exits (including Ctrl+C / TERM paths handled by the script).

@@ -21,7 +21,9 @@ const BUILD_VERSION: &str = env!("GIT_VERSION");
 #[derive(Debug, Parser)]
 #[command(name = "cyan-skillfish-governor-smu", version = BUILD_VERSION)]
 #[command(about = "GPU frequency governor for AMD Cyan Skillfish APU")]
-#[command(long_about = "Adaptive GPU frequency governor for AMD Cyan Skillfish APU\n\nFor detailed documentation and configuration options, see:\nhttps://github.com/filippor/cyan-skillfish-governor/blob/smu/README.md")]
+#[command(
+    long_about = "Adaptive GPU frequency governor for AMD Cyan Skillfish APU\n\nFor detailed documentation and configuration options, see:\nhttps://github.com/filippor/cyan-skillfish-governor/blob/smu/README.md"
+)]
 struct Args {
     #[arg(short, long)]
     verbose: bool,
@@ -66,6 +68,7 @@ fn main() -> Result<()> {
     let mut usage_fix_cycle = 0;
     let mut max_freq = gpu.max_freq;
     let mut performance_mode = false;
+    let mut performance_mode_frequency = None;
 
     gpu.change_freq(target_freq)?;
 
@@ -82,11 +85,14 @@ fn main() -> Result<()> {
             Err(TryRecvError::Empty) => {}
         }
 
-        if !handle_dbus_performance_mode_command(dbus_rx.as_ref(), &mut performance_mode) {
+        if !handle_dbus_performance_mode_command(
+            dbus_rx.as_ref(),
+            &mut performance_mode,
+            &mut performance_mode_frequency,
+        ) {
             break;
         }
-        
-        
+
         let (average_load, burst_length) = if !performance_mode || gpu_usage_fix.is_some() {
             gpu.poll_and_get_load()?
         } else {
@@ -108,10 +114,10 @@ fn main() -> Result<()> {
             &mut max_freq,
             freq_step,
         )?;
-        
 
         if performance_mode {
-            target_freq = gpu.max_freq;
+            let requested = performance_mode_frequency.unwrap_or(gpu.max_freq);
+            target_freq = requested.clamp(gpu.min_freq, max_freq);
         } else {
             // Normal adaptive frequency control
             let burst = is_burst(&config.timing, average_load, burst_length);
@@ -163,8 +169,7 @@ fn main() -> Result<()> {
         }
 
         // Apply frequency change in performance mode
-        if performance_mode && curr_freq != target_freq {
-            debug!("Performance mode: forcing frequency to {}", target_freq);
+        if curr_freq != target_freq {
             gpu.change_freq(target_freq)?;
             curr_freq = target_freq;
         }
@@ -238,6 +243,7 @@ fn sleep_for_next_cycle(
 fn handle_dbus_performance_mode_command(
     dbus_rx: Option<&mpsc::Receiver<PerformanceModeCommand>>,
     performance_mode: &mut bool,
+    performance_mode_frequency: &mut Option<u32>,
 ) -> bool {
     let Some(rx) = dbus_rx else {
         return true; // D-Bus disabled, continue normally
@@ -246,12 +252,23 @@ fn handle_dbus_performance_mode_command(
     match rx.try_recv() {
         Ok(PerformanceModeCommand::Enable) => {
             *performance_mode = true;
+            *performance_mode_frequency = None;
             info!("Performance mode enabled");
             true
         }
         Ok(PerformanceModeCommand::Disable) => {
             *performance_mode = false;
+            *performance_mode_frequency = None;
             info!("Performance mode disabled: reverting to adaptive frequency control");
+            true
+        }
+        Ok(PerformanceModeCommand::SetFixedFrequency(frequency)) => {
+            *performance_mode = true;
+            *performance_mode_frequency = Some(frequency);
+            info!(
+                "Performance mode enabled with fixed frequency request: {}",
+                frequency
+            );
             true
         }
         Err(TryRecvError::Empty) => true,

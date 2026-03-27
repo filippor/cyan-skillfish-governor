@@ -10,6 +10,7 @@ use zbus::blocking::ConnectionBuilder;
 pub enum PerformanceModeCommand {
     Enable,
     Disable,
+    SetFixedFrequency(u32),
 }
 
 const SERVICE_NAME: &str = "com.cyan.SkillFishGovernor";
@@ -22,6 +23,12 @@ struct PerformanceModeIface {
 }
 
 impl PerformanceModeIface {
+    fn send_command(&self, command: PerformanceModeCommand) {
+        if let Err(err) = self.tx.send(command) {
+            error!("failed to notify governor main loop from D-Bus handler: {err}");
+        }
+    }
+
     fn send_mode_update(&self, enabled: bool) {
         self.enabled.store(enabled, Ordering::Relaxed);
         let command = if enabled {
@@ -30,9 +37,12 @@ impl PerformanceModeIface {
             PerformanceModeCommand::Disable
         };
 
-        if let Err(err) = self.tx.send(command) {
-            error!("failed to notify governor main loop from D-Bus handler: {err}");
-        }
+        self.send_command(command);
+    }
+
+    fn send_fixed_frequency_update(&self, frequency: u32) {
+        self.enabled.store(true, Ordering::Relaxed);
+        self.send_command(PerformanceModeCommand::SetFixedFrequency(frequency));
     }
 }
 
@@ -44,6 +54,10 @@ impl PerformanceModeIface {
 
     fn disable(&self) {
         self.send_mode_update(false);
+    }
+
+    fn set_fixed_frequency(&self, frequency: u32) {
+        self.send_fixed_frequency_update(frequency);
     }
 
     #[zbus(property)]

@@ -137,8 +137,9 @@ fn parse_timing_config(config: &Table) -> TimingConfig {
         "timing.burst-samples",
         1..=64,
         None,
-        None
-    ).map(|v| v as u32);
+        None,
+    )
+    .map(|v| v as u32);
 
     const I16_MAX: i64 = i16::MAX as i64;
     let down_events = parse_integer_in_range_optional(
@@ -346,8 +347,9 @@ fn parse_temperature_config(config: &Table) -> TemperatureConfig {
         "temperature.throttling",
         0..=110,
         Some(85),
-        None
-    ).map(|v| v as u32);
+        None,
+    )
+    .map(|v| v as u32);
 
     let throttling_recovery_temp = throttling_temp.and_then(|max_recovery| {
         let max_allowed = i64::from(max_recovery.saturating_sub(1));
@@ -480,7 +482,6 @@ fn number_value(table: Option<&Table>, key: &str) -> std::result::Result<f64, &'
                 })
         })
 }
-
 
 macro_rules! impl_parse_in_range_optional {
     ($func_name:ident, $value_getter:ident, $type:ty) => {
