@@ -1,23 +1,27 @@
 mod app_error;
 mod config;
+mod dbus;
 mod gpu;
 mod gpu_usage_fix;
 use app_error::Result;
 use clap::Parser;
 use config::{Config, TimingConfig};
+use dbus::PerformanceModeCommand;
 use gpu::GPU;
 use gpu_usage_fix::GpuUsageFix;
 use log::{debug, error, info};
 use signal_hook::consts::signal::*;
 use signal_hook::iterator::Signals;
 use std::sync::mpsc::{self, Sender, TryRecvError};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 const UP_EVENTS: i16 = 2;
 const BUILD_VERSION: &str = env!("GIT_VERSION");
 
 #[derive(Debug, Parser)]
 #[command(name = "cyan-skillfish-governor-smu", version = BUILD_VERSION)]
+#[command(about = "GPU frequency governor for AMD Cyan Skillfish APU")]
+#[command(long_about = "Adaptive GPU frequency governor for AMD Cyan Skillfish APU\n\nFor detailed documentation and configuration options, see:\nhttps://github.com/filippor/cyan-skillfish-governor/blob/smu/README.md")]
 struct Args {
     #[arg(short, long)]
     verbose: bool,
@@ -32,6 +36,15 @@ fn main() -> Result<()> {
     let (shutdown_tx, shutdown_rx) = mpsc::channel::<()>();
     install_signal_handler(shutdown_tx)?;
     let config = load_config(args.config_path.as_deref())?;
+
+    // Start D-Bus service only if enabled in config
+    let dbus_rx = if config.dbus.enabled {
+        info!("D-Bus service listening enabled");
+        Some(dbus::DbusService::start()?)
+    } else {
+        info!("D-Bus service listening disabled in configuration");
+        None
+    };
 
     let mut gpu_usage_fix = if config.gpu_usage.fix_metrics {
         info!("GPU usage metrics fix enabled");
@@ -52,6 +65,7 @@ fn main() -> Result<()> {
     let mut status = 0;
     let mut usage_fix_cycle = 0;
     let mut max_freq = gpu.max_freq;
+    let mut performance_mode = false;
 
     gpu.change_freq(target_freq)?;
 
@@ -62,18 +76,28 @@ fn main() -> Result<()> {
     info!("freq min {} max {}", gpu.min_freq, max_freq);
 
     loop {
+        let loop_start = Instant::now();
         match shutdown_rx.try_recv() {
             Ok(()) | Err(TryRecvError::Disconnected) => break,
             Err(TryRecvError::Empty) => {}
         }
-        let loop_start = Instant::now();
 
-        let (average_load, burst_length) = gpu.poll_and_get_load()?;
+        if !handle_dbus_performance_mode_command(dbus_rx.as_ref(), &mut performance_mode) {
+            break;
+        }
+        
+        
+        let (average_load, burst_length) = if !performance_mode || gpu_usage_fix.is_some() {
+            gpu.poll_and_get_load()?
+        } else {
+            (1.0, 0)
+        };
 
         flush_gpu_usage_fix(
             gpu_usage_fix.as_mut(),
             &mut usage_fix_cycle,
             config.gpu_usage.flush_every,
+            performance_mode,
             average_load,
         );
 
@@ -84,56 +108,73 @@ fn main() -> Result<()> {
             &mut max_freq,
             freq_step,
         )?;
+        
 
-        let burst = is_burst(&config.timing, average_load, burst_length);
-        if burst {
-            target_freq += burst_freq_step;
+        if performance_mode {
+            target_freq = gpu.max_freq;
         } else {
-            if average_load > config.load_target.up_thresh && status <= UP_EVENTS {
-                status += UP_EVENTS;
-            } else if average_load < config.load_target.down_thresh && curr_freq > gpu.min_freq {
-                status -= 1;
-            } else if status < 0 {
-                status += 1;
-            } else if status > 0 {
-                status -= 1;
+            // Normal adaptive frequency control
+            let burst = is_burst(&config.timing, average_load, burst_length);
+            if burst {
+                target_freq += burst_freq_step;
+            } else {
+                if average_load > config.load_target.up_thresh && status <= UP_EVENTS {
+                    status += UP_EVENTS;
+                } else if average_load < config.load_target.down_thresh && curr_freq > gpu.min_freq
+                {
+                    status -= 1;
+                } else if status < 0 {
+                    status += 1;
+                } else if status > 0 {
+                    status -= 1;
+                }
+
+                if status <= -config.timing.down_events {
+                    target_freq -= freq_step;
+                } else if status >= UP_EVENTS {
+                    target_freq += freq_step;
+                }
             }
 
-            if status <= -config.timing.down_events {
-                target_freq -= freq_step;
-            } else if status >= UP_EVENTS {
-                target_freq += freq_step;
+            target_freq = target_freq.clamp(gpu.min_freq, max_freq);
+
+            let hit_bounds = target_freq == gpu.min_freq || target_freq == max_freq;
+            let big_change =
+                curr_freq.abs_diff(target_freq) >= config.frequency_thresholds.significant_change;
+
+            let should_apply_change =
+                curr_freq != target_freq && (burst || hit_bounds || big_change);
+            if should_apply_change {
+                debug!(
+                    "freq curr {} target {} temp {} status {} de {} load {:.2} bl {}",
+                    curr_freq,
+                    target_freq,
+                    temp,
+                    status,
+                    config.timing.down_events,
+                    average_load,
+                    burst_length
+                );
+
+                gpu.change_freq(target_freq)?;
+                status = 0;
+                curr_freq = target_freq;
             }
         }
 
-        target_freq = target_freq.clamp(gpu.min_freq, max_freq);
-
-        let hit_bounds = target_freq == gpu.min_freq || target_freq == max_freq;
-        let big_change =
-            curr_freq.abs_diff(target_freq) >= config.frequency_thresholds.significant_change;
-
-        let should_apply_change = curr_freq != target_freq && (burst || hit_bounds || big_change);
-        if should_apply_change {
-            debug!(
-                "freq curr {} target {} temp {} status {} de {} load {:.2} bl {}",
-                curr_freq,
-                target_freq,
-                temp,
-                status,
-                config.timing.down_events,
-                average_load,
-                burst_length
-            );
-
+        // Apply frequency change in performance mode
+        if performance_mode && curr_freq != target_freq {
+            debug!("Performance mode: forcing frequency to {}", target_freq);
             gpu.change_freq(target_freq)?;
-            status = 0;
             curr_freq = target_freq;
         }
 
-        let elapsed = loop_start.elapsed();
-        if elapsed < config.timing.adjustment_interval {
-            std::thread::sleep(config.timing.adjustment_interval - elapsed);
-        }
+        sleep_for_next_cycle(
+            config.timing.adjustment_interval,
+            config.gpu_usage.flush_every,
+            performance_mode,
+            loop_start,
+        );
     }
 
     info!("Shutting down gracefully...");
@@ -174,19 +215,69 @@ fn load_config(config_path: Option<&str>) -> Result<Config> {
     Config::new(config_text)
 }
 
+fn sleep_for_next_cycle(
+    adjustment_interval: Duration,
+    flush_every: u32,
+    performance_mode: bool,
+    loop_start: Instant,
+) {
+    let target_cycle_interval = if performance_mode {
+        adjustment_interval
+            .checked_mul(flush_every.max(1))
+            .unwrap_or(Duration::MAX)
+    } else {
+        adjustment_interval
+    };
+
+    let elapsed = loop_start.elapsed();
+    if elapsed < target_cycle_interval {
+        std::thread::sleep(target_cycle_interval - elapsed);
+    }
+}
+
+fn handle_dbus_performance_mode_command(
+    dbus_rx: Option<&mpsc::Receiver<PerformanceModeCommand>>,
+    performance_mode: &mut bool,
+) -> bool {
+    let Some(rx) = dbus_rx else {
+        return true; // D-Bus disabled, continue normally
+    };
+
+    match rx.try_recv() {
+        Ok(PerformanceModeCommand::Enable) => {
+            *performance_mode = true;
+            info!("Performance mode enabled");
+            true
+        }
+        Ok(PerformanceModeCommand::Disable) => {
+            *performance_mode = false;
+            info!("Performance mode disabled: reverting to adaptive frequency control");
+            true
+        }
+        Err(TryRecvError::Empty) => true,
+        Err(TryRecvError::Disconnected) => {
+            error!("D-Bus service channel disconnected");
+            false
+        }
+    }
+}
+
 fn flush_gpu_usage_fix(
     gpu_usage_fix: Option<&mut GpuUsageFix>,
     usage_fix_cycle: &mut u32,
     flush_every: u32,
+    performance_mode: bool,
     average_load: f32,
 ) {
     let Some(fix) = gpu_usage_fix else {
         return;
     };
 
-    *usage_fix_cycle = usage_fix_cycle.saturating_add(1);
-    if *usage_fix_cycle < flush_every {
-        return;
+    if !performance_mode {
+        *usage_fix_cycle = usage_fix_cycle.saturating_add(1);
+        if *usage_fix_cycle < flush_every {
+            return;
+        }
     }
 
     *usage_fix_cycle = 0;
@@ -231,8 +322,8 @@ fn update_max_freq_for_temperature(
 mod tests {
     use super::is_burst;
     use crate::config::{
-        Config, FrequencyThresholdConfig, GpuConfig, GpuSetMethod, GpuUsageConfig, GpuUsageMethod,
-        LoadTargetConfig, TemperatureConfig, TimingConfig,
+        Config, DbusConfig, FrequencyThresholdConfig, GpuConfig, GpuSetMethod, GpuUsageConfig,
+        GpuUsageMethod, LoadTargetConfig, TemperatureConfig, TimingConfig,
     };
     use std::{collections::BTreeMap, time::Duration};
 
@@ -266,6 +357,7 @@ mod tests {
             gpu: GpuConfig {
                 set_method: GpuSetMethod::Smu,
             },
+            dbus: DbusConfig { enabled: false },
         }
     }
 

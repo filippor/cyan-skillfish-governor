@@ -47,6 +47,9 @@ mkdir -p %{buildroot}/%{_unitdir}
 cp %name.service %{buildroot}/%{_unitdir}/%name.service
 mkdir -p %{buildroot}%{_sysconfdir}/%name/
 cp default-config.toml %{buildroot}%{_sysconfdir}/%name/config.toml
+install -Dm755 scripts/cyan-skillfish-performance-mode %{buildroot}%{_bindir}/cyan-skillfish-performance-mode
+mkdir -p %{buildroot}%{_datadir}/dbus-1/system.d/
+cp com.cyan.SkillFishGovernor.conf %{buildroot}%{_datadir}/dbus-1/system.d/com.cyan.SkillFishGovernor.conf
 mkdir -p %{buildroot}/usr/lib/systemd/system-preset/
 #echo "enable %name.service" > %{buildroot}/usr/lib/systemd/system-preset/50-%name.preset
 
@@ -70,8 +73,10 @@ mkdir -p %{buildroot}/usr/lib/systemd/system-preset/
 %license LICENSE.dependencies
 %doc README.md
 %{_bindir}/%name
+%{_bindir}/cyan-skillfish-performance-mode
 %{_sysconfdir}/%name/config.toml
 %{_unitdir}/%name.service
+%{_datadir}/dbus-1/system.d/com.cyan.SkillFishGovernor.conf
 #/usr/lib/systemd/system-preset/50-%name.preset
 
 

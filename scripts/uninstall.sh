@@ -13,6 +13,8 @@ fi
 
 INSTALL_DIR="/etc/cyan-skillfish-governor-smu"
 SERVICE_FILE="/etc/systemd/system/cyan-skillfish-governor-smu.service"
+PERFORMANCE_MODE_PATH="/usr/local/bin/cyan-skillfish-performance-mode"
+DBUS_POLICY_PATH="/etc/dbus-1/system.d/com.cyan.SkillFishGovernor.conf"
 
 echo -e "${YELLOW}Uninstalling Cyan Skillfish Governor...${NC}"
 
@@ -38,6 +40,19 @@ fi
 if [ -d "$INSTALL_DIR" ]; then
     echo "Removing installation directory..."
     rm -rf "$INSTALL_DIR"
+fi
+
+if [ -f "$PERFORMANCE_MODE_PATH" ]; then
+    echo "Removing performance mode script..."
+    rm -f "$PERFORMANCE_MODE_PATH"
+fi
+
+if [ -f "$DBUS_POLICY_PATH" ]; then
+    echo "Removing D-Bus policy..."
+    rm -f "$DBUS_POLICY_PATH"
+    if command -v busctl >/dev/null 2>&1; then
+        busctl --system call org.freedesktop.DBus /org/freedesktop/DBus org.freedesktop.DBus ReloadConfig || true
+    fi
 fi
 
 echo -e "${GREEN}Uninstall complete!${NC}"

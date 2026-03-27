@@ -45,6 +45,7 @@ pub struct Config {
     pub safe_points: BTreeMap<u32, u32>,
     pub gpu_usage: GpuUsageConfig,
     pub gpu: GpuConfig,
+    pub dbus: DbusConfig,
 }
 
 pub struct TimingConfig {
@@ -80,6 +81,10 @@ pub struct GpuConfig {
     pub set_method: GpuSetMethod,
 }
 
+pub struct DbusConfig {
+    pub enabled: bool,
+}
+
 impl Config {
     pub fn new(config_text: std::io::Result<String>) -> Result<Config> {
         let config = config_text?.parse::<Table>()?;
@@ -96,6 +101,7 @@ impl Config {
             gpu: GpuConfig {
                 set_method: parse_gpu_set_method(&config),
             },
+            dbus: parse_dbus_config(&config),
         })
     }
 }
@@ -110,6 +116,7 @@ fn parse_timing_config(config: &Table) -> TimingConfig {
         "timing.intervals.sample",
         1..=i64::from(u32::MAX),
         Some(2000),
+        Some(2000),
     )
     .unwrap() as u32;
 
@@ -120,16 +127,18 @@ fn parse_timing_config(config: &Table) -> TimingConfig {
         "timing.intervals.adjust",
         i64::from(sampling_interval)..=i64::MAX,
         Some(adjustment_interval_default),
+        Some(adjustment_interval_default),
     )
     .unwrap() as u64;
 
-    let burst_samples = parse_optional_integer_clamped(
+    let burst_samples = parse_integer_in_range_optional(
         timing,
         "burst-samples",
         "timing.burst-samples",
         1..=64,
         None,
-    );
+        None
+    ).map(|v| v as u32);
 
     const I16_MAX: i64 = i16::MAX as i64;
     let down_events = parse_integer_in_range_optional(
@@ -137,6 +146,7 @@ fn parse_timing_config(config: &Table) -> TimingConfig {
         "down-events",
         "timing.down-events",
         0..=I16_MAX,
+        Some(10),
         Some(10),
     )
     .unwrap() as i16;
@@ -148,6 +158,7 @@ fn parse_timing_config(config: &Table) -> TimingConfig {
         "timing.ramp-rates.normal",
         0.0..=f64::MAX,
         Some(1.0),
+        Some(1.0),
     )
     .unwrap() as f32;
 
@@ -156,6 +167,7 @@ fn parse_timing_config(config: &Table) -> TimingConfig {
         "burst",
         "timing.ramp-rates.burst",
         0.0..=f64::MAX,
+        Some((200.0 * ramp_rate) as f64),
         Some((200.0 * ramp_rate) as f64),
     )
     .unwrap() as f32;
@@ -190,6 +202,7 @@ fn parse_significant_change(config: &Table) -> u32 {
         "frequency-thresholds.adjust",
         1..=i64::from(u32::MAX),
         Some(10),
+        Some(10),
     )
     .unwrap() as u32
 }
@@ -203,6 +216,7 @@ fn parse_load_target_config(config: &Table) -> LoadTargetConfig {
         "load-target.upper",
         0.0..1.0,
         Some(0.95),
+        Some(0.95),
     )
     .unwrap();
 
@@ -211,6 +225,7 @@ fn parse_load_target_config(config: &Table) -> LoadTargetConfig {
         "lower",
         "load-target.lower",
         0.0..1.0,
+        Some((up_thresh - 0.15).max(0.0)),
         Some((up_thresh - 0.15).max(0.0)),
     )
     .unwrap();
@@ -325,13 +340,14 @@ fn validate_safe_points(safe_points: &BTreeMap<u32, u32>) -> Result<()> {
 fn parse_temperature_config(config: &Table) -> TemperatureConfig {
     let temperature = config.get("temperature").and_then(|t| t.as_table());
 
-    let throttling_temp = parse_optional_integer_clamped(
+    let throttling_temp = parse_integer_in_range_optional(
         temperature,
         "throttling",
         "temperature.throttling",
         0..=110,
         Some(85),
-    );
+        None
+    ).map(|v| v as u32);
 
     let throttling_recovery_temp = throttling_temp.and_then(|max_recovery| {
         let max_allowed = i64::from(max_recovery.saturating_sub(1));
@@ -340,6 +356,7 @@ fn parse_temperature_config(config: &Table) -> TemperatureConfig {
             "throttling_recovery",
             "temperature.throttling_recovery",
             1..=max_allowed,
+            None,
             None,
         )
         .map(|v| v as u32)
@@ -375,6 +392,7 @@ fn parse_gpu_usage_config(config: &Table) -> GpuUsageConfig {
         "flush-every",
         "gpu-usage.flush-every",
         1..=i64::from(u32::MAX),
+        Some(10),
         Some(10),
     )
     .unwrap() as u32;
@@ -419,6 +437,21 @@ fn parse_gpu_set_method(config: &Table) -> GpuSetMethod {
     }
 }
 
+fn parse_dbus_config(config: &Table) -> DbusConfig {
+    let dbus = config.get("dbus").and_then(|t| t.as_table());
+
+    let enabled = dbus
+        .and_then(|t| t.get("enabled"))
+        .ok_or("is missing")
+        .and_then(|v| v.as_bool().ok_or("must be a boolean true or false"))
+        .unwrap_or_else(|s| {
+            warn!("dbus.enabled {s}, replaced with the default value of false");
+            false
+        });
+
+    DbusConfig { enabled }
+}
+
 fn nested_table<'a>(table: Option<&'a Table>, key: &str) -> Option<&'a Table> {
     table
         .and_then(|t| t.get(key))
@@ -448,61 +481,6 @@ fn number_value(table: Option<&Table>, key: &str) -> std::result::Result<f64, &'
         })
 }
 
-fn parse_optional_integer_clamped<R: std::ops::RangeBounds<i64> + std::fmt::Debug>(
-    table: Option<&Table>,
-    key: &str,
-    config_key: &str,
-    range: R,
-    default: Option<u32>,
-) -> Option<u32> {
-    let is_missing = table.and_then(|t| t.get(key)).is_none();
-    if is_missing {
-        warn!(
-            "{} is missing {}",
-            config_key,
-            default
-                .map(|d| format!(", using default {d}"))
-                .unwrap_or_else(|| ", disabled".into())
-        );
-        return default;
-    }
-    match integer_value(table, key) {
-        Ok(v) if range.contains(&v) => Some(v as u32),
-        Ok(v) if v < 0 => {
-            warn!("{} = {} is negative, disabling", config_key, v);
-            None
-        }
-        Ok(v) => {
-            let min = match range.start_bound() {
-                std::ops::Bound::Included(m) => *m,
-                std::ops::Bound::Excluded(m) => m.saturating_add(1),
-                std::ops::Bound::Unbounded => i64::MIN,
-            };
-            let max = match range.end_bound() {
-                std::ops::Bound::Included(m) => *m,
-                std::ops::Bound::Excluded(m) => m.saturating_sub(1),
-                std::ops::Bound::Unbounded => i64::MAX,
-            };
-
-            let clamped = v.clamp(min, max);
-            if clamped != v {
-                warn!(
-                    "{} = {} must be between {} and {} clamping to {}",
-                    config_key,
-                    v,
-                    range_min(&range),
-                    range_max(&range),
-                    clamped
-                );
-            }
-            Some(clamped as u32)
-        }
-        Err(s) => {
-            warn!("{} = {} — disabling", config_key, s);
-            None
-        }
-    }
-}
 
 macro_rules! impl_parse_in_range_optional {
     ($func_name:ident, $value_getter:ident, $type:ty) => {
@@ -511,6 +489,7 @@ macro_rules! impl_parse_in_range_optional {
             key: &str,
             config_key: &str,
             range: R,
+            missing_value: Option<$type>,
             default: Option<$type>,
         ) -> Option<$type> {
             let is_missing = table.and_then(|t| t.get(key)).is_none();
@@ -518,11 +497,11 @@ macro_rules! impl_parse_in_range_optional {
                 warn!(
                     "{} is missing {}",
                     config_key,
-                    default
+                    missing_value
                         .map(|d| format!(", using default {d}"))
                         .unwrap_or_else(|| ", disabled".to_string())
                 );
-                return default;
+                return missing_value;
             }
             match $value_getter(table, key) {
                 Ok(v) if range.contains(&v) => Some(v),
@@ -776,13 +755,13 @@ mod tests {
     }
 
     #[test]
-    fn parse_optional_integer_clamped_clamps_when_above_max() {
+    fn parse_optional_integer_disable_when_out_of_range() {
         let config_text = r#"
             [temperature]
             throttling = 200
         "#;
         let config = parse_config(config_text);
-        assert_eq!(config.temperature.throttling_temp, Some(110));
+        assert_eq!(config.temperature.throttling_temp, None);
     }
 
     #[test]

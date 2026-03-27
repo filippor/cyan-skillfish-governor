@@ -14,3 +14,4 @@ signal-hook = { version = "0.3", features = ["iterator"] }
 clap = { version = "4.5", features = ["derive"] }
 env_logger = "0.11"
 log = "0.4"
+zbus = { version = "4", features = ["blocking"] }
