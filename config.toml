@@ -5,11 +5,14 @@ adjust = 200_000
 
 [gpu-usage]
 fix-metrics = true
-method = "busy-flag" # "busy-flag" or "process"
+method = "process" # "busy-flag" or "process"
 flush-every = 10
 
 [gpu]
-set-method = "smu"  # "smu" or "kernel"
+set-method = "kernel"  # "smu" or "kernel"
+
+[dbus]
+enabled = true
 
 # MHz/ms
 [timing.ramp-rates]

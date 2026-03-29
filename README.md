@@ -1,40 +1,295 @@
-# Cyan Skillfish GPU governor
-GPU governor for the AMD Cyan Skillfish APU.
-Continously maintains a target frequency, and adjusts the actual GPU frequency when the deviation is too great.
-If the CPU is continously busy for too long, ramps up the target frequency rapidly.
+# Cyan Skillfish GPU Governor
 
-this version can set voltage/frequency using either the smu api (thanks to the work of [bc250collective](https://github.com/bc250-collective/)) or the kernel sysfs path.
+Adaptive GPU governor for the AMD Cyan Skillfish APU.
 
-Takes a TOML config file path as its only argument.
-Keys are:
-* `gpu-usage`
-  * `fix-metrics` : boolean default true fix gpu usage metrics
-  * `method` : 'process' or 'busy-flag' default 'busy-flag' choose the method to get the gpu usage sample busy-flag or total time from process
-  * `flush-every` : integer default 10 flush patched gpu metrics to disk every N update cycles
-* `gpu`
-  * `set-method`: 'smu' or 'kernel' default 'smu' choose the frequency/voltage control backend
-* `timing`
-  * `intervals`: in µs
-    * `sample`: how often to sample GPU load used only for gpu-usage = 'busy-flag'
-      (it's a single bit, so needs to be sampled more often than you'd think)
-    * `adjust`: how often to consider adjusting the frequency
-  * `burst-samples`: while the GPU has been busy for this many samples in a row,
-    enter "burst mode", increasing the frequency at the `timing.ramp_rates.burst` rate.
-    Set to 0 to disable burst mode. This work only for gpu-usage = 'busy-flag'
-  * `down-events`: number of event below `load-target.low` to step down
-  * `ramp_rates`: how quickly to increase/decrease GPU frequency, in MHz/ms
-    * `normal`: ramp rate for normal adjustments
-    * `burst`: ramp rate in burst mode
-* `frequency-thresholds`: in MHz
-  * `adjust`: how large a proposed adjustment must be to actually be carried out
-* `load-target`: as a fraction
-  * `upper`: GPU load above which target frequency is increased
-  * `lower`: GPU load below which target frequency is decreased
-* `temperature` in °C
-  * `throttling` if temperature is greather  start reducing max frequency
-  * `throttling_recovery` if temperaure is lower restore max frequency
-* `safe-points`: known safe/stable power points, array of tables with two keys:
-  * `frequency`: GPU frequency in MHz
-  * `voltage`: GPU supply voltage in mV
+It continuously tracks GPU load, maintains a target frequency, and adjusts GPU frequency when the deviation is large enough. It also supports burst behavior for sustained load and optional thermal throttling.
 
-See also [default-config.toml](default-config.toml).
+This version can set frequency/voltage using either:
+- the SMU API (thanks to [bc250collective](https://github.com/bc250-collective/))
+- kernel sysfs controls
+
+## What It Does
+
+- Samples GPU load and computes a moving target frequency.
+- Applies frequency changes only when meaningful (unless burst mode forces faster response).
+- Optionally throttles with temperature limits.
+- Optionally exposes a D-Bus interface to toggle a high-performance mode.
+
+## Usage
+
+```bash
+cyan-skillfish-governor-smu [-v|--verbose] [CONFIG]
+```
+
+- `CONFIG` is an optional TOML path.
+- If `CONFIG` is omitted, internal defaults are used.
+
+## Installation
+
+Prebuilt/community packaging references:
+
+- AUR: https://aur.archlinux.org/packages/cyan-skillfish-governor-smu
+- COPR (Fedora/Bazzite): https://copr.fedorainfracloud.org/coprs/filippor/bazzite/
+- ARCHIVE: https://github.com/filippor/cyan-skillfish-governor/releases
+
+<details>
+<summary>Bazzite</summary>
+
+Bazzite can consume the same COPR package source. On mutable setups, use the Fedora steps below.
+
+On rpm-ostree based setups, layer the package and reboot:
+
+```bash
+sudo rpm-ostree install cyan-skillfish-governor-smu
+systemctl reboot
+```
+
+Configuration file location:
+
+```bash
+/etc/cyan-skillfish-governor-smu/config.toml
+```
+
+</details>
+
+<details>
+<summary>Fedora</summary>
+
+Enable the COPR repository and install:
+
+```bash
+sudo dnf copr enable filippor/bazzite
+sudo dnf install cyan-skillfish-governor-smu
+```
+
+Configuration file location:
+
+```bash
+/etc/cyan-skillfish-governor-smu/config.toml
+```
+
+</details>
+
+<details>
+<summary>Arch</summary>
+
+Install from AUR package `cyan-skillfish-governor-smu` with your preferred AUR helper:
+
+```bash
+paru -S cyan-skillfish-governor-smu
+```
+
+
+Configuration file location:
+
+```bash
+/etc/cyan-skillfish-governor-smu/config.toml
+```
+
+</details>
+
+<details>
+<summary>Generic Linux</summary>
+
+If your distribution is not listed above, you can install from a release archive.
+
+1. Download the latest release archive from GitHub Releases.
+
+2. Extract and enter the directory:
+
+```bash
+tar -xf cyan-skillfish-governor-*.tar.gz
+cd cyan-skillfish-governor-*
+```
+
+3. Make sure the binary is available in the extracted directory (for example by using a release archive that already contains `cyan-skillfish-governor-smu`, or by building it with `cargo build --release`).
+
+4. Run the installer script:
+
+```bash
+chmod +x scripts/install.sh
+sudo ./scripts/install.sh
+```
+
+Installed configuration location:
+
+```bash
+/etc/cyan-skillfish-governor-smu/config.toml
+```
+
+</details>
+
+<details>
+<summary>Build from sources</summary>
+
+Clone the repository (smu branch), then build:
+
+```bash
+git clone --branch smu https://github.com/filippor/cyan-skillfish-governor.git
+cd cyan-skillfish-governor
+```
+
+Build the binary with:
+
+```bash
+cargo build --release
+```
+
+Then use the binary at:
+
+```bash
+./target/release/cyan-skillfish-governor-smu
+```
+
+For a manual run test with an explicit config file:
+
+```bash
+./target/release/cyan-skillfish-governor-smu ./config.toml
+```
+</details>
+
+
+## General recommendation:
+
+Before enabling at boot, test one manual start and check logs:
+
+```bash
+systemctl start cyan-skillfish-governor-smu
+```
+
+After that, run a real GPU workload (for example a benchmark or a game) for a few minutes and re-check service logs to confirm expected behavior under load.
+check log
+```bash
+systemctl status cyan-skillfish-governor-smu
+sudo journalctl -u cyan-skillfish-governor-smu -n 100 --no-pager
+```
+If everything looks good, then enable it:
+
+```bash
+systemctl enable cyan-skillfish-governor-smu
+```
+
+after configuration change restart the service with 
+```bash
+systemctl restart cyan-skillfish-governor-smu
+```
+
+## Configuration
+
+Top-level keys:
+
+- `gpu-usage` (also accepts legacy `gpu_usage`)
+  - `fix-metrics` (bool, default: `true`): enable GPU usage metrics patching.
+  - `method` (`"busy-flag"` or `"process"`, default: `"busy-flag"`): how load is sampled proces is more CPU intensive scan all process that use GPU.
+  - `flush-every` (integer, default: `10`): flush patched metrics every N update cycles.
+
+- `gpu`
+  - `set-method` (`"smu"` or `"kernel"`, default: `"smu"`): backend used to apply frequency/voltage.
+
+- `dbus`
+  - `enabled` (bool, default: `false`): enable D-Bus performance-mode service.
+
+- `timing`
+  - `intervals` (microseconds)
+    - `sample` (default: `2000`): sampling period. Used by `gpu-usage.method = "busy-flag"`.
+    - `adjust` (default: `sample * 10`): control-loop period.
+  - `burst-samples` (optional integer `1..=64`, default: disabled): number of consecutive busy samples needed to enter burst mode.
+    - `0`, negative, out-of-range, or missing value disables burst mode.
+  - `down-events` (integer, default: `10`): number of low-load events (below `load-target.lower`) required before stepping down.
+  - `ramp-rates` (MHz/ms)
+    - `normal` (default: `1.0`): normal ramp rate.
+    - `burst` (default: `200 * normal`): burst ramp rate. Must be greater than `normal`.
+
+- `frequency-thresholds`
+  - `adjust` (MHz, default: `10`): minimum proposed frequency delta required to apply a non-burst change.
+
+- `load-target` (fraction)
+  - `upper` (default: `0.95`): load above which target frequency increases.
+  - `lower` (default: `upper - 0.15`): load below which target frequency decreases.
+
+- `temperature` (degrees C)
+  - `throttling` (optional integer `0..=110`, default when missing: `85`): above this temperature, max allowed frequency is reduced.
+  - `throttling_recovery` (optional): below this temperature, max frequency is restored.
+    - Must be at least `1` and strictly less than `throttling`.
+    - Missing value keeps recovery disabled.
+
+- `safe-points`
+  - Array of `{ frequency, voltage }` tables.
+  - `frequency` in MHz, `voltage` in mV.
+  - Must be non-empty when provided.
+  - For increasing frequency, voltage must not decrease.
+  - If missing entirely, conservative built-in defaults are used.
+
+### Example Configuration
+
+Use [default-config.toml](default-config.toml) as a baseline profile.
+
+## Performance Mode Script
+The configuration option `dbus.enabled` must be set to `true`.
+
+Performance mode:
+- sets frequency to max by default,
+- reduces load-check overhead (and skips load calculation entirely when `gpu-usage.fix-metrics` is disabled),
+- keeps thermal throttling active.
+
+You can also set a fixed frequency while in performance mode with `--fixed-frequency <MHz>`.
+
+It controls performance mode over system D-Bus using interface:
+- Service: `com.cyan.SkillFishGovernor`
+- Object: `/com/cyan/SkillFishGovernor`
+- Interface: `com.cyan.SkillFishGovernor.PerformanceMode`
+
+Prerequisites:
+- Governor service must be running.
+- `dbus.enabled = true` in configuration.
+- `busctl` (preferred) or `dbus-send` available.
+
+### Script modes
+
+1. Toggle explicitly:
+
+```bash
+cyan-skillfish-performance-mode --on
+cyan-skillfish-performance-mode --fixed-frequency 1200
+cyan-skillfish-performance-mode --off
+cyan-skillfish-performance-mode --status
+```
+
+2. Wrap a command (auto-enable then auto-disable on exit):
+
+```bash
+cyan-skillfish-performance-mode mangohud %command%
+cyan-skillfish-performance-mode --fixed-frequency 1200 mangohud %command%
+```
+
+3. Steam launch option example:
+
+```bash
+cyan-skillfish-performance-mode %command%
+cyan-skillfish-performance-mode --fixed-frequency 1200 %command%
+```
+
+If needed, you can pass `--` before the wrapped command:
+
+```bash
+cyan-skillfish-performance-mode --fixed-frequency 1200 -- mangohud %command%
+```
+
+In wrapper mode, the script installs a cleanup trap, so performance mode is disabled when the wrapped process exits (including Ctrl+C / TERM paths handled by the script).
+
+
+## Troubleshooting
+
+If the service does not behave as expected, run the governor directly with verbose logging and an explicit config path:
+
+```bash
+sudo cyan-skillfish-governor-smu --verbose /etc/cyan-skillfish-governor-smu/config.toml
+```
+
+If you are running from a local build tree instead of the installed binary:
+
+```bash
+./target/release/cyan-skillfish-governor-smu --verbose ./config.toml
+```
+
+This helps isolate whether issues come from systemd startup or from configuration/runtime behavior.

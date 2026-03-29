@@ -21,6 +21,8 @@ INSTALL_DIR="/etc/cyan-skillfish-governor-smu"
 BIN_PATH="$INSTALL_DIR/cyan-skillfish-governor-smu"
 CONFIG_PATH="$INSTALL_DIR/config.toml"
 SERVICE_FILE="/etc/systemd/system/cyan-skillfish-governor-smu.service"
+PERFORMANCE_MODE_PATH="/usr/local/bin/cyan-skillfish-performance-mode"
+DBUS_POLICY_PATH="/etc/dbus-1/system.d/com.cyan.SkillFishGovernor.conf"
 
 # Create installation directory
 echo "Creating installation directory..."
@@ -30,6 +32,18 @@ mkdir -p "$INSTALL_DIR"
 echo "Installing binary..."
 cp cyan-skillfish-governor-smu "$BIN_PATH"
 chmod +x "$BIN_PATH"
+
+echo "Installing performance mode script..."
+cp scripts/cyan-skillfish-performance-mode "$PERFORMANCE_MODE_PATH"
+chmod +x "$PERFORMANCE_MODE_PATH"
+
+echo "Installing D-Bus policy..."
+cp com.cyan.SkillFishGovernor.conf "$DBUS_POLICY_PATH"
+
+echo "Reloading D-Bus policy..."
+if command -v busctl >/dev/null 2>&1; then
+    busctl --system call org.freedesktop.DBus /org/freedesktop/DBus org.freedesktop.DBus ReloadConfig || true
+fi
 
 # Copy config if it doesn't exist
 if [ -f "$CONFIG_PATH" ]; then
@@ -71,6 +85,17 @@ echo "  sudo systemctl enable cyan-skillfish-governor-smu"
 echo ""
 echo "To check status:"
 echo "  sudo systemctl status cyan-skillfish-governor-smu"
+echo ""
+echo "D-Bus policy installed at:"
+echo "  $DBUS_POLICY_PATH"
+echo ""
+echo "Steam launch option example:"
+echo "  cyan-skillfish-performance-mode %command%"
+echo ""
+echo "Performance mode command:"
+echo "  cyan-skillfish-performance-mode --on   # enable"
+echo "  cyan-skillfish-performance-mode --off  # disable"
+echo "  cyan-skillfish-performance-mode --status # check status"
 echo ""
 echo "To view logs:"
 echo "  sudo journalctl -u cyan-skillfish-governor-smu -f"
