@@ -5,6 +5,7 @@ mod gpu;
 mod gpu_usage_fix;
 use app_error::Result;
 use clap::Parser;
+use clap_verbosity_flag::{Verbosity, InfoLevel};
 use config::{Config, TimingConfig};
 use dbus::PerformanceModeCommand;
 use gpu::GPU;
@@ -25,8 +26,8 @@ const BUILD_VERSION: &str = env!("GIT_VERSION");
     long_about = "Adaptive GPU frequency governor for AMD Cyan Skillfish APU\n\nFor detailed documentation and configuration options, see:\nhttps://github.com/filippor/cyan-skillfish-governor/blob/smu/README.md"
 )]
 struct Args {
-    #[arg(short, long)]
-    verbose: bool,
+    #[command(flatten)]
+    verbose: Verbosity<InfoLevel>,
     #[arg(value_name = "CONFIG")]
     config_path: Option<String>,
 }
@@ -194,10 +195,9 @@ fn main() -> Result<()> {
     Ok(())
 }
 
-fn init_logger(verbose: bool) {
-    let default_filter = if verbose { "debug" } else { "info" };
-    let env = env_logger::Env::default().default_filter_or(default_filter);
-    let _ = env_logger::Builder::from_env(env)
+fn init_logger(verbose: Verbosity<InfoLevel>) {
+    let _ = env_logger::Builder::new()
+    .filter_level(verbose.log_level_filter())
         .format_timestamp_millis()
         .try_init();
 }
