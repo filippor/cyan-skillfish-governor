@@ -6,7 +6,7 @@ use std::{
 };
 
 const REAL_METRICS: &str = "/sys/class/drm/card1/device/gpu_metrics";
-const PATCHED_METRICS: &str = "/var/amd_gpu_usage_fix/patched_metrics";
+const PATCHED_METRICS: &str = "/dev/shm/patched_gpu_metrics";
 const USAGE_OFFSET: usize = 0x1C; // Byte 28
 
 pub struct GpuUsageFix {
