@@ -49,19 +49,19 @@ fn main() -> Result<()> {
         None
     };
 
-    let mut gpu_usage_fix = if config.gpu_usage.fix_metrics {
-        info!("GPU usage metrics fix enabled");
-        Some(GpuUsageFix::start()?)
-    } else {
-        None
-    };
-
     let mut gpu = GPU::new(
         config.safe_points,
         config.gpu.set_method,
         config.gpu_usage.method,
         config.timing.sampling_interval,
     )?;
+
+    let mut gpu_usage_fix = if config.gpu_usage.fix_metrics {
+        info!("GPU usage metrics fix enabled");
+        Some(GpuUsageFix::start(gpu.get_sysfs_path())?)
+    } else {
+        None
+    };
 
     let mut curr_freq = gpu.get_freq()?;
     let mut target_freq = gpu.min_freq;
@@ -184,7 +184,7 @@ fn main() -> Result<()> {
     }
 
     info!("Shutting down gracefully...");
-    if let Some(mut fix) = gpu_usage_fix
+    if let Some(fix) = gpu_usage_fix
         && let Err(err) = fix.shutdown()
     {
         error!("GPU usage metrics fix cleanup failed: {err}");
@@ -198,8 +198,8 @@ fn main() -> Result<()> {
 fn init_logger(verbose: Verbosity<InfoLevel>) {
     let _ = env_logger::Builder::new()
     .filter_level(verbose.log_level_filter())
-        .format_timestamp_millis()
-        .try_init();
+    .format_timestamp_millis()
+    .try_init();
 }
 
 fn install_signal_handler(shutdown_tx: Sender<()>) -> Result<()> {
