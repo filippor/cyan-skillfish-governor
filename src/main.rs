@@ -5,7 +5,7 @@ mod gpu;
 mod gpu_usage_fix;
 use app_error::Result;
 use clap::Parser;
-use clap_verbosity_flag::{Verbosity, InfoLevel};
+use clap_verbosity_flag::{InfoLevel, Verbosity};
 use config::{Config, TimingConfig};
 use dbus::PerformanceModeCommand;
 use gpu::GPU;
@@ -197,9 +197,9 @@ fn main() -> Result<()> {
 
 fn init_logger(verbose: Verbosity<InfoLevel>) {
     let _ = env_logger::Builder::new()
-    .filter_level(verbose.log_level_filter())
-    .format_timestamp_millis()
-    .try_init();
+        .filter_level(verbose.log_level_filter())
+        .format_timestamp_millis()
+        .try_init();
 }
 
 fn install_signal_handler(shutdown_tx: Sender<()>) -> Result<()> {

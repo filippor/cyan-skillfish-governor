@@ -1,10 +1,10 @@
+use log::{debug, trace};
 use std::{
     fs::{self, File, OpenOptions},
     io::{self, Read, Seek, SeekFrom, Write},
     path::PathBuf,
     process::{Command, Stdio},
 };
-use log::{debug, trace};
 
 const METRICS_FNAME: &str = "gpu_metrics";
 const PATCHED_METRICS_PATH: &str = "/dev/shm/patched_gpu_metrics";
@@ -42,7 +42,10 @@ impl GpuUsageFix {
         patched_file.write_all(&raw)?;
         patched_file.flush()?;
 
-        trace!("Binding patched metrics {} to real metrics: {real_metrics_path}", PATCHED_METRICS_PATH);
+        trace!(
+            "Binding patched metrics {} to real metrics: {real_metrics_path}",
+            PATCHED_METRICS_PATH
+        );
         mount_bind(PATCHED_METRICS_PATH, &real_metrics_path)?;
 
         trace!("Removing file from filesystem: {}", PATCHED_METRICS_PATH);
