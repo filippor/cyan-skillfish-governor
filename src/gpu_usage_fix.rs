@@ -1,51 +1,64 @@
 use std::{
     fs::{self, File, OpenOptions},
     io::{self, Read, Seek, SeekFrom, Write},
-    path::Path,
+    path::PathBuf,
     process::{Command, Stdio},
 };
+use log::{debug, trace};
 
-const REAL_METRICS: &str = "/sys/class/drm/card1/device/gpu_metrics";
-const PATCHED_METRICS: &str = "/var/amd_gpu_usage_fix/patched_metrics";
+const METRICS_FNAME: &str = "gpu_metrics";
+const PATCHED_METRICS_PATH: &str = "/dev/shm/patched_gpu_metrics";
 const USAGE_OFFSET: usize = 0x1C; // Byte 28
 
 pub struct GpuUsageFix {
     real_file: File,
     patched_file: File,
+    path: String,
 }
 
 impl GpuUsageFix {
-    pub fn start() -> io::Result<Self> {
-        let _ = umount_bind(REAL_METRICS);
+    pub fn start(path: PathBuf) -> io::Result<Self> {
+        debug!("Searching {} file at {path:?}", METRICS_FNAME);
+        let real_metrics_path_buf = path.join(METRICS_FNAME);
+        let real_metrics_path = real_metrics_path_buf.as_path().to_str().unwrap();
 
-        // Open real metrics before bind-mount.
-        let real_file = OpenOptions::new().read(true).open(REAL_METRICS)?;
+        trace!("Unmounting stale bind: {real_metrics_path}");
+        let _ = umount_bind(&real_metrics_path);
 
-        // Create zeroed patched file.
-        if let Some(parent) = Path::new(PATCHED_METRICS).parent() {
-            fs::create_dir_all(parent)?;
-        }
-        {
-            let mut f = OpenOptions::new()
-                .create(true)
-                .truncate(true)
-                .write(true)
-                .open(PATCHED_METRICS)?;
-            f.write_all(&[0u8; 128])?;
-            f.flush()?;
-        }
+        trace!("Opening real metrics: {real_metrics_path}");
+        let mut real_file = OpenOptions::new().read(true).open(&real_metrics_path)?;
 
-        mount_bind(PATCHED_METRICS, REAL_METRICS)?;
-        let patched_file = OpenOptions::new().write(true).open(PATCHED_METRICS)?;
+        // Reading real metrics to buffer
+        let mut raw = [0u8; 128];
+        real_file.seek(SeekFrom::Start(0))?;
+        real_file.read(&mut raw)?;
+
+        trace!("Creating patched metrics: {}", PATCHED_METRICS_PATH);
+        let mut patched_file = OpenOptions::new()
+            .create(true)
+            .truncate(true)
+            .write(true)
+            .open(PATCHED_METRICS_PATH)?;
+        patched_file.write_all(&raw)?;
+        patched_file.flush()?;
+
+        trace!("Binding patched metrics {} to real metrics: {real_metrics_path}", PATCHED_METRICS_PATH);
+        mount_bind(PATCHED_METRICS_PATH, &real_metrics_path)?;
+
+        trace!("Removing file from filesystem: {}", PATCHED_METRICS_PATH);
+        fs::remove_file(PATCHED_METRICS_PATH)?;
 
         Ok(Self {
             real_file,
             patched_file,
+            path: String::from(real_metrics_path),
         })
     }
 
     pub fn set_usage_percent(&mut self, usage: f32) -> io::Result<()> {
-        let clamped = usage.clamp(0.0, 100.0).round() as u16;
+        trace!("Set usage percent: {usage:.2}");
+
+        let clamped = (usage * 100.0).clamp(0.0, 10000.0).round() as u16;
         let mut raw = [0u8; 128];
 
         self.real_file.seek(SeekFrom::Start(0))?;
@@ -65,8 +78,8 @@ impl GpuUsageFix {
         Ok(())
     }
 
-    pub fn shutdown(&mut self) -> io::Result<()> {
-        umount_bind(REAL_METRICS)
+    pub fn shutdown(&self) -> io::Result<()> {
+        umount_bind(self.path.as_str())
     }
 }
 

@@ -38,6 +38,7 @@ pub struct GPU {
     freq_strategy: Box<dyn FreqStrategy>,
     usage_strategy: Box<dyn UsageStrategy>,
     safe_points: BTreeMap<u32, u32>,
+    location: BUS_INFO,
 }
 
 impl GPU {
@@ -88,7 +89,12 @@ impl GPU {
             freq_strategy,
             usage_strategy,
             safe_points,
+            location,
         })
+    }
+
+    pub fn get_sysfs_path(&self) -> PathBuf {
+        self.location.get_sysfs_path()
     }
 
     pub fn poll_and_get_load(&mut self) -> Result<(f32, u32)> {

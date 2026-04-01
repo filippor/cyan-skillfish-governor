@@ -5,6 +5,7 @@ mod gpu;
 mod gpu_usage_fix;
 use app_error::Result;
 use clap::Parser;
+use clap_verbosity_flag::{Verbosity, InfoLevel};
 use config::{Config, TimingConfig};
 use dbus::PerformanceModeCommand;
 use gpu::GPU;
@@ -25,8 +26,8 @@ const BUILD_VERSION: &str = env!("GIT_VERSION");
     long_about = "Adaptive GPU frequency governor for AMD Cyan Skillfish APU\n\nFor detailed documentation and configuration options, see:\nhttps://github.com/filippor/cyan-skillfish-governor/blob/smu/README.md"
 )]
 struct Args {
-    #[arg(short, long)]
-    verbose: bool,
+    #[command(flatten)]
+    verbose: Verbosity<InfoLevel>,
     #[arg(value_name = "CONFIG")]
     config_path: Option<String>,
 }
@@ -48,19 +49,19 @@ fn main() -> Result<()> {
         None
     };
 
-    let mut gpu_usage_fix = if config.gpu_usage.fix_metrics {
-        info!("GPU usage metrics fix enabled");
-        Some(GpuUsageFix::start()?)
-    } else {
-        None
-    };
-
     let mut gpu = GPU::new(
         config.safe_points,
         config.gpu.set_method,
         config.gpu_usage.method,
         config.timing.sampling_interval,
     )?;
+
+    let mut gpu_usage_fix = if config.gpu_usage.fix_metrics {
+        info!("GPU usage metrics fix enabled");
+        Some(GpuUsageFix::start(gpu.get_sysfs_path())?)
+    } else {
+        None
+    };
 
     let mut curr_freq = gpu.get_freq()?;
     let mut target_freq = gpu.min_freq;
@@ -183,7 +184,7 @@ fn main() -> Result<()> {
     }
 
     info!("Shutting down gracefully...");
-    if let Some(mut fix) = gpu_usage_fix
+    if let Some(fix) = gpu_usage_fix
         && let Err(err) = fix.shutdown()
     {
         error!("GPU usage metrics fix cleanup failed: {err}");
@@ -194,12 +195,11 @@ fn main() -> Result<()> {
     Ok(())
 }
 
-fn init_logger(verbose: bool) {
-    let default_filter = if verbose { "debug" } else { "info" };
-    let env = env_logger::Env::default().default_filter_or(default_filter);
-    let _ = env_logger::Builder::from_env(env)
-        .format_timestamp_millis()
-        .try_init();
+fn init_logger(verbose: Verbosity<InfoLevel>) {
+    let _ = env_logger::Builder::new()
+    .filter_level(verbose.log_level_filter())
+    .format_timestamp_millis()
+    .try_init();
 }
 
 fn install_signal_handler(shutdown_tx: Sender<()>) -> Result<()> {

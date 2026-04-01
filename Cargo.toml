@@ -12,6 +12,7 @@ nix = { version = "0.29", features = ["fs"] }
 thiserror = "1.0"
 signal-hook = { version = "0.3", features = ["iterator"] }
 clap = { version = "4.5", features = ["derive"] }
+clap-verbosity-flag = "2.2.3"
 env_logger = "0.11"
 log = "0.4"
 zbus = { version = "4", features = ["blocking"] }
