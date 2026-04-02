@@ -277,6 +277,23 @@ cyan-skillfish-performance-mode --fixed-frequency 1200 -- mangohud %command%
 
 In wrapper mode, the script installs a cleanup trap, so performance mode is disabled when the wrapped process exits (including Ctrl+C / TERM paths handled by the script).
 
+## Frequency Range Interface
+
+Controls min/max frequency limits over D-Bus (adaptive mode only).  
+`0` = no limit. Thermal throttling still applies.
+
+- **Service**: `com.cyan.SkillFishGovernor`
+- **Object**: `/com/cyan/SkillFishGovernor/FrequencyRange`
+- **Interface**: `com.cyan.SkillFishGovernor.FrequencyRange`
+- **Method**: `SetRange(min, max)` (MHz)
+- **Properties (read-only)**: `AvailableMin`, `AvailableMax`
+
+Examples:
+```bash
+busctl call --system com.cyan.SkillFishGovernor /com/cyan/SkillFishGovernor/FrequencyRange com.cyan.SkillFishGovernor.FrequencyRange SetRange uu 500 1500
+busctl call --system com.cyan.SkillFishGovernor /com/cyan/SkillFishGovernor/FrequencyRange com.cyan.SkillFishGovernor.FrequencyRange SetRange uu 700 0
+busctl call --system com.cyan.SkillFishGovernor /com/cyan/SkillFishGovernor/FrequencyRange com.cyan.SkillFishGovernor.FrequencyRange SetRange uu 0 0
+```
 
 ## Troubleshooting
 
