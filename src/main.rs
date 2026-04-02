@@ -7,7 +7,7 @@ use app_error::Result;
 use clap::Parser;
 use clap_verbosity_flag::{InfoLevel, Verbosity};
 use config::{Config, TimingConfig};
-use dbus::PerformanceModeCommand;
+use dbus::{PerformanceModeCommand, FrequencyRangeCommand};
 use gpu::GPU;
 use gpu_usage_fix::GpuUsageFix;
 use log::{debug, error, info};
@@ -40,15 +40,6 @@ fn main() -> Result<()> {
     install_signal_handler(shutdown_tx)?;
     let config = load_config(args.config_path.as_deref())?;
 
-    // Start D-Bus service only if enabled in config
-    let dbus_rx = if config.dbus.enabled {
-        info!("D-Bus service listening enabled");
-        Some(dbus::DbusService::start()?)
-    } else {
-        info!("D-Bus service listening disabled in configuration");
-        None
-    };
-
     let mut gpu = GPU::new(
         config.safe_points,
         config.gpu.set_method,
@@ -62,6 +53,21 @@ fn main() -> Result<()> {
     } else {
         None
     };
+
+    // Start D-Bus service only if enabled in config
+    let (dbus_rx, fr_rx) = if config.dbus.enabled {
+        info!("D-Bus service listening enabled");
+        let (pm, fr) = dbus::DbusService::start(gpu.min_freq, gpu.max_freq)?;
+        (Some(pm), Some(fr))
+    } else {
+        info!("D-Bus service listening disabled in configuration");
+        (None, None)
+    };
+
+    // Requested frequency limits via the FrequencyRange D‑Bus interface.
+    // 0 means "no limit" (use hardware min or current thermal max).
+    let mut requested_min = 0u32;
+    let mut requested_max = 0u32;
 
     let mut curr_freq = gpu.get_freq()?;
     let mut target_freq = gpu.min_freq;
@@ -94,6 +100,11 @@ fn main() -> Result<()> {
             break;
         }
 
+        // Handle FrequencyRange D-Bus commands (set min/max limits)
+        if !handle_dbus_frequency_range_command(fr_rx.as_ref(), &mut requested_min, &mut requested_max) {
+            break;
+        }
+
         let (average_load, burst_length) = if !performance_mode || gpu_usage_fix.is_some() {
             gpu.poll_and_get_load()?
         } else {
@@ -116,9 +127,15 @@ fn main() -> Result<()> {
             freq_step,
         )?;
 
+        // Calculate effective frequency bounds for this cycle
+        let effective_min = if requested_min < gpu.min_freq { gpu.min_freq } else { requested_min.min(max_freq) };
+        let effective_max = if requested_max == 0 { max_freq } else { requested_max.min(max_freq) };
+
         if performance_mode {
             let requested = performance_mode_frequency.unwrap_or(gpu.max_freq);
             target_freq = requested.clamp(gpu.min_freq, max_freq);
+        } else if effective_min == effective_max {
+            target_freq = effective_min;
         } else {
             // Normal adaptive frequency control
             let burst = is_burst(&config.timing, average_load, burst_length);
@@ -127,7 +144,7 @@ fn main() -> Result<()> {
             } else {
                 if average_load > config.load_target.up_thresh && status <= UP_EVENTS {
                     status += UP_EVENTS;
-                } else if average_load < config.load_target.down_thresh && curr_freq > gpu.min_freq
+                } else if average_load < config.load_target.down_thresh && curr_freq > effective_min
                 {
                     status -= 1;
                 } else if status < 0 {
@@ -143,9 +160,9 @@ fn main() -> Result<()> {
                 }
             }
 
-            target_freq = target_freq.clamp(gpu.min_freq, max_freq);
+            target_freq = target_freq.clamp(effective_min, effective_max);
 
-            let hit_bounds = target_freq == gpu.min_freq || target_freq == max_freq;
+            let hit_bounds = target_freq == effective_min || target_freq == effective_max;
             let big_change =
                 curr_freq.abs_diff(target_freq) >= config.frequency_thresholds.significant_change;
 
@@ -274,6 +291,42 @@ fn handle_dbus_performance_mode_command(
         Err(TryRecvError::Empty) => true,
         Err(TryRecvError::Disconnected) => {
             error!("D-Bus service channel disconnected");
+            false
+        }
+    }
+}
+
+/// Handles the FrequencyRange D-Bus interface commands.
+/// Updates the requested min/max frequency limits.
+fn handle_dbus_frequency_range_command(
+    fr_rx: Option<&mpsc::Receiver<FrequencyRangeCommand>>,
+    min_limit: &mut u32,
+    max_limit: &mut u32,
+) -> bool {
+    let Some(rx) = fr_rx else { return true };
+    match rx.try_recv() {
+         Ok(FrequencyRangeCommand::SetRange(min, max)) => {
+            match (min, max) {
+                (0, 0) => {
+                    info!("Frequency range cleared: both limits removed");
+                }
+                (0, ma) if ma > 0 => {
+                    info!("Upper limit set to {} MHz, lower limit removed", ma);
+                }
+                (mi, 0) if mi > 0 => {
+                    info!("Lower limit set to {} MHz, upper limit removed", mi);
+                }
+                (mi, ma) => {
+                    info!("Frequency range set: min={} MHz, max={} MHz", mi, ma);
+                }
+            }
+            *min_limit = min;
+            *max_limit = max;
+            true
+        }
+        Err(TryRecvError::Empty) => true,
+        Err(TryRecvError::Disconnected) => {
+            error!("Frequency range D-Bus channel disconnected");
             false
         }
     }
