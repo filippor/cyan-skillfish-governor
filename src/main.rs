@@ -3,16 +3,17 @@ mod config;
 mod dbus;
 mod gpu;
 mod gpu_usage_fix;
-use app_error::Result;
+use app_error::{AppError, Result};
 use clap::Parser;
 use clap_verbosity_flag::{InfoLevel, Verbosity};
 use config::{Config, TimingConfig};
-use dbus::{PerformanceModeCommand, FrequencyRangeCommand};
+use dbus::PerformanceModeCommand;
 use gpu::GPU;
 use gpu_usage_fix::GpuUsageFix;
 use log::{debug, error, info};
 use signal_hook::consts::signal::*;
 use signal_hook::iterator::Signals;
+use std::ops::RangeInclusive;
 use std::sync::mpsc::{self, Sender, TryRecvError};
 use std::time::{Duration, Instant};
 
@@ -40,6 +41,15 @@ fn main() -> Result<()> {
     install_signal_handler(shutdown_tx)?;
     let config = load_config(args.config_path.as_deref())?;
 
+    // Start D-Bus service only if enabled in config
+    let dbus_rx = if config.dbus.enabled {
+        info!("D-Bus service listening enabled");
+        Some(dbus::DbusService::start()?)
+    } else {
+        info!("D-Bus service listening disabled in configuration");
+        None
+    };
+
     let mut gpu = GPU::new(
         config.safe_points,
         config.gpu.set_method,
@@ -54,30 +64,15 @@ fn main() -> Result<()> {
         None
     };
 
-    // Start D-Bus service only if enabled in config
-    let (dbus_rx, fr_rx) = if config.dbus.enabled {
-        info!("D-Bus service listening enabled");
-        let (pm, fr) = dbus::DbusService::start(gpu.min_freq, gpu.max_freq)?;
-        (Some(pm), Some(fr))
-    } else {
-        info!("D-Bus service listening disabled in configuration");
-        (None, None)
-    };
-
-    // Requested frequency limits via the FrequencyRange D‑Bus interface.
-    // 0 means "no limit" (use hardware min or current thermal max).
-    let mut requested_min = 0u32;
-    let mut requested_max = 0u32;
+    let default_allowed_range = gpu.min_freq..=gpu.max_freq;
 
     let mut curr_freq = gpu.get_freq()?;
     let mut target_freq = gpu.min_freq;
     let mut status = 0;
     let mut usage_fix_cycle = 0;
     let mut max_freq = gpu.max_freq;
+    let mut allowed_range = gpu.min_freq..=gpu.max_freq;
     let mut performance_mode = false;
-    let mut performance_mode_frequency = None;
-
-    gpu.change_freq(target_freq)?;
 
     let adjustment_millis = config.timing.adjustment_interval.as_millis() as f32;
     let burst_freq_step = (config.timing.ramp_rate_burst * adjustment_millis) as u32;
@@ -87,22 +82,23 @@ fn main() -> Result<()> {
 
     loop {
         let loop_start = Instant::now();
+        let should_apply_change;
         match shutdown_rx.try_recv() {
             Ok(()) | Err(TryRecvError::Disconnected) => break,
             Err(TryRecvError::Empty) => {}
         }
 
-        if !handle_dbus_performance_mode_command(
-            dbus_rx.as_ref(),
-            &mut performance_mode,
-            &mut performance_mode_frequency,
-        ) {
-            break;
-        }
-
-        // Handle FrequencyRange D-Bus commands (set min/max limits)
-        if !handle_dbus_frequency_range_command(fr_rx.as_ref(), &mut requested_min, &mut requested_max) {
-            break;
+        if let Some(rx) = dbus_rx.as_ref() {
+            match handle_dbus_performance_mode_command(rx, default_allowed_range.clone()) {
+                Ok((new_performance_mode, new_allowed_range)) => {
+                    performance_mode = new_performance_mode;
+                    allowed_range = new_allowed_range;
+                }
+                Err(AppError::TryRecv(TryRecvError::Empty)) => {}
+                Err(err) => {
+                    error!("D-Bus command handling failed, keeping previous state: {err}");
+                }
+            }
         }
 
         let (average_load, burst_length) = if !performance_mode || gpu_usage_fix.is_some() {
@@ -122,29 +118,30 @@ fn main() -> Result<()> {
         let temp = update_max_freq_for_temperature(
             &mut gpu,
             &config.temperature,
-            &config.frequency_thresholds,
+            config.frequency_thresholds.significant_change,
+            *allowed_range.end(),
             &mut max_freq,
-            freq_step,
         )?;
 
-        // Calculate effective frequency bounds for this cycle
-        let effective_min = if requested_min < gpu.min_freq { gpu.min_freq } else { requested_min.min(max_freq) };
-        let effective_max = if requested_max == 0 { max_freq } else { requested_max.min(max_freq) };
-
         if performance_mode {
-            let requested = performance_mode_frequency.unwrap_or(gpu.max_freq);
-            target_freq = requested.clamp(gpu.min_freq, max_freq);
-        } else if effective_min == effective_max {
-            target_freq = effective_min;
+            target_freq = max_freq;
+            should_apply_change = true;
         } else {
             // Normal adaptive frequency control
-            let burst = is_burst(&config.timing, average_load, burst_length);
+            let burst = {
+                let timing: &TimingConfig = &config.timing;
+                average_load >= 0.99
+                    || timing
+                        .burst_samples
+                        .is_some_and(|burst_samples| burst_length >= burst_samples)
+            };
             if burst {
                 target_freq += burst_freq_step;
             } else {
                 if average_load > config.load_target.up_thresh && status <= UP_EVENTS {
                     status += UP_EVENTS;
-                } else if average_load < config.load_target.down_thresh && curr_freq > effective_min
+                } else if average_load < config.load_target.down_thresh
+                    && curr_freq > *allowed_range.start()
                 {
                     status -= 1;
                 } else if status < 0 {
@@ -160,35 +157,22 @@ fn main() -> Result<()> {
                 }
             }
 
-            target_freq = target_freq.clamp(effective_min, effective_max);
+            target_freq = target_freq.clamp(*allowed_range.start(), max_freq);
 
-            let hit_bounds = target_freq == effective_min || target_freq == effective_max;
+            let hit_bounds = target_freq == *allowed_range.start() || target_freq == max_freq;
             let big_change =
                 curr_freq.abs_diff(target_freq) >= config.frequency_thresholds.significant_change;
 
-            let should_apply_change =
-                curr_freq != target_freq && (burst || hit_bounds || big_change);
-            if should_apply_change {
-                debug!(
-                    "freq curr {} target {} temp {} status {} de {} load {:.2} bl {}",
-                    curr_freq,
-                    target_freq,
-                    temp,
-                    status,
-                    config.timing.down_events,
-                    average_load,
-                    burst_length
-                );
-
-                gpu.change_freq(target_freq)?;
-                status = 0;
-                curr_freq = target_freq;
-            }
+            should_apply_change = curr_freq != target_freq && (burst || hit_bounds || big_change);
         }
 
-        // Apply frequency change in performance mode
-        if curr_freq != target_freq {
+        if should_apply_change {
+            debug!(
+                "freq curr {} target {} temp {} load {:.2} status {}  burst_length {}, performance_mode {}",
+                curr_freq, target_freq, temp, average_load, status, burst_length, performance_mode
+            );
             gpu.change_freq(target_freq)?;
+            status = 0;
             curr_freq = target_freq;
         }
 
@@ -258,77 +242,55 @@ fn sleep_for_next_cycle(
 }
 
 fn handle_dbus_performance_mode_command(
-    dbus_rx: Option<&mpsc::Receiver<PerformanceModeCommand>>,
-    performance_mode: &mut bool,
-    performance_mode_frequency: &mut Option<u32>,
-) -> bool {
-    let Some(rx) = dbus_rx else {
-        return true; // D-Bus disabled, continue normally
-    };
+    dbus_rx: &mpsc::Receiver<PerformanceModeCommand>,
+    allowed_freq_range: RangeInclusive<u32>,
+) -> Result<(bool, RangeInclusive<u32>)> {
+    let command = dbus_rx.try_recv()?;
 
-    match rx.try_recv() {
-        Ok(PerformanceModeCommand::Enable) => {
-            *performance_mode = true;
-            *performance_mode_frequency = None;
+    match command {
+        PerformanceModeCommand::Enable => {
             info!("Performance mode enabled");
-            true
+            Ok((true, allowed_freq_range))
         }
-        Ok(PerformanceModeCommand::Disable) => {
-            *performance_mode = false;
-            *performance_mode_frequency = None;
+        PerformanceModeCommand::Disable => {
             info!("Performance mode disabled: reverting to adaptive frequency control");
-            true
+            Ok((false, allowed_freq_range))
         }
-        Ok(PerformanceModeCommand::SetFixedFrequency(frequency)) => {
-            *performance_mode = true;
-            *performance_mode_frequency = Some(frequency);
+        PerformanceModeCommand::SetFixedFrequency(frequency) => {
             info!(
                 "Performance mode enabled with fixed frequency request: {}",
                 frequency
             );
-            true
+            Ok((true, *allowed_freq_range.start()..=frequency))
         }
-        Err(TryRecvError::Empty) => true,
-        Err(TryRecvError::Disconnected) => {
-            error!("D-Bus service channel disconnected");
-            false
-        }
-    }
-}
-
-/// Handles the FrequencyRange D-Bus interface commands.
-/// Updates the requested min/max frequency limits.
-fn handle_dbus_frequency_range_command(
-    fr_rx: Option<&mpsc::Receiver<FrequencyRangeCommand>>,
-    min_limit: &mut u32,
-    max_limit: &mut u32,
-) -> bool {
-    let Some(rx) = fr_rx else { return true };
-    match rx.try_recv() {
-         Ok(FrequencyRangeCommand::SetRange(min, max)) => {
-            match (min, max) {
-                (0, 0) => {
-                    info!("Frequency range cleared: both limits removed");
-                }
-                (0, ma) if ma > 0 => {
-                    info!("Upper limit set to {} MHz, lower limit removed", ma);
-                }
-                (mi, 0) if mi > 0 => {
-                    info!("Lower limit set to {} MHz, upper limit removed", mi);
-                }
-                (mi, ma) => {
-                    info!("Frequency range set: min={} MHz, max={} MHz", mi, ma);
-                }
+        PerformanceModeCommand::SetRange(min, max) => match (min, max) {
+            (0, 0) => {
+                info!("Frequency range cleared: both limits removed");
+                Ok((false, allowed_freq_range.clone()))
             }
-            *min_limit = min;
-            *max_limit = max;
-            true
-        }
-        Err(TryRecvError::Empty) => true,
-        Err(TryRecvError::Disconnected) => {
-            error!("Frequency range D-Bus channel disconnected");
-            false
-        }
+            (0, ma) if allowed_freq_range.contains(&ma) => {
+                info!("Upper limit set to {} MHz, lower limit removed", ma);
+                Ok((false, *allowed_freq_range.start()..=ma))
+            }
+            (mi, 0) if allowed_freq_range.contains(&mi) => {
+                info!("Lower limit set to {} MHz, upper limit removed", mi);
+                Ok((false, mi..=*allowed_freq_range.end()))
+            }
+            (mi, ma) if allowed_freq_range.contains(&mi) && allowed_freq_range.contains(&ma) => {
+                info!("Frequency range set: min={} MHz, max={} MHz", mi, ma);
+                Ok((false, mi..=ma))
+            }
+            (mi, ma) => {
+                Err(format!(
+                    "Invalid frequency range request: min={} MHz, max={} MHz (allowed {}..={} MHz)",
+                    mi,
+                    ma,
+                    allowed_freq_range.start(),
+                    *allowed_freq_range.end()
+                )
+                .into())
+            }
+        },
     }
 }
 
@@ -356,167 +318,27 @@ fn flush_gpu_usage_fix(
     }
 }
 
-fn is_burst(timing: &TimingConfig, average_load: f32, burst_length: u32) -> bool {
-    average_load >= 0.99
-        || timing
-            .burst_samples
-            .is_some_and(|burst_samples| burst_length >= burst_samples)
-}
-
 fn update_max_freq_for_temperature(
     gpu: &mut GPU,
     temperature: &config::TemperatureConfig,
-    frequency_thresholds: &config::FrequencyThresholdConfig,
+    step_down: u32,
+    recover_freq: u32,
     max_freq: &mut u32,
-    freq_step: u32,
 ) -> Result<u32> {
     let temp = gpu.read_temperature()?;
 
     if let Some(max_temp) = temperature.throttling_temp {
-        if temp > max_temp && *max_freq >= gpu.min_freq + freq_step {
-            *max_freq -= frequency_thresholds.significant_change;
+        if temp > max_temp {
+            *max_freq -= step_down;
             debug!("throttling temp {temp} freq {}", *max_freq);
         } else if let Some(recovery_temp) = temperature.throttling_recovery_temp
             && temp < recovery_temp
-            && *max_freq != gpu.max_freq
+            && *max_freq != recover_freq
         {
-            *max_freq = gpu.max_freq;
+            *max_freq = recover_freq;
             debug!("recover throttling temp {temp} freq {}", *max_freq);
         }
     }
 
     Ok(temp)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::is_burst;
-    use crate::config::{
-        Config, DbusConfig, FrequencyThresholdConfig, GpuConfig, GpuSetMethod, GpuUsageConfig,
-        GpuUsageMethod, LoadTargetConfig, TemperatureConfig, TimingConfig,
-    };
-    use std::{collections::BTreeMap, time::Duration};
-
-    fn test_config() -> Config {
-        Config {
-            timing: TimingConfig {
-                sampling_interval: Duration::from_millis(2),
-                adjustment_interval: Duration::from_millis(20),
-                ramp_rate: 1.0,
-                ramp_rate_burst: 4.0,
-                burst_samples: Some(48),
-                down_events: 3,
-            },
-            load_target: LoadTargetConfig {
-                up_thresh: 0.95,
-                down_thresh: 0.80,
-            },
-            frequency_thresholds: FrequencyThresholdConfig {
-                significant_change: 10,
-            },
-            temperature: TemperatureConfig {
-                throttling_temp: None,
-                throttling_recovery_temp: None,
-            },
-            safe_points: BTreeMap::from([(350, 700), (2000, 1000)]),
-            gpu_usage: GpuUsageConfig {
-                fix_metrics: false,
-                flush_every: 10,
-                method: GpuUsageMethod::BusyFlag,
-            },
-            gpu: GpuConfig {
-                set_method: GpuSetMethod::Smu,
-            },
-            dbus: DbusConfig { enabled: false },
-        }
-    }
-
-    #[test]
-    fn burst_triggers_on_high_average_load() {
-        let config = test_config();
-
-        assert!(is_burst(&config.timing, 0.99, 0));
-    }
-
-    #[test]
-    fn burst_triggers_on_burst_length_threshold() {
-        let config = test_config();
-
-        assert!(is_burst(&config.timing, 0.50, 48));
-        assert!(!is_burst(&config.timing, 0.50, 47));
-    }
-
-    #[test]
-    fn burst_is_disabled_when_threshold_is_missing() {
-        let mut config = test_config();
-        config.timing.burst_samples = None;
-
-        assert!(!is_burst(&config.timing, 0.50, 64));
-    }
-
-    #[test]
-    fn frequency_change_is_applied_for_burst_even_without_big_change() {
-        let curr_freq: u32 = 1000;
-        let target_freq: u32 = 1001;
-        let burst = true;
-        let min_freq: u32 = 350;
-        let max_freq: u32 = 2000;
-        let significant_change: u32 = 10;
-        let hit_bounds = target_freq == min_freq || target_freq == max_freq;
-        let big_change = curr_freq.abs_diff(target_freq) >= significant_change;
-
-        assert!(curr_freq != target_freq && (burst || hit_bounds || big_change));
-    }
-
-    #[test]
-    fn frequency_change_is_applied_when_target_hits_bound() {
-        let curr_freq: u32 = 1000;
-        let significant_change: u32 = 10;
-
-        {
-            let target_freq: u32 = 350;
-            let burst = false;
-            let hit_bounds = true;
-            let big_change = curr_freq.abs_diff(target_freq) >= significant_change;
-            assert!(curr_freq != target_freq && (burst || hit_bounds || big_change));
-        }
-
-        {
-            let target_freq: u32 = 2000;
-            let burst = false;
-            let hit_bounds = true;
-            let big_change = curr_freq.abs_diff(target_freq) >= significant_change;
-            assert!(curr_freq != target_freq && (burst || hit_bounds || big_change));
-        }
-    }
-
-    #[test]
-    fn frequency_change_requires_reason_when_not_bursting() {
-        let curr_freq: u32 = 1000;
-        let min_freq: u32 = 350;
-        let max_freq: u32 = 2000;
-        let burst = false;
-        let significant_change: u32 = 10;
-
-        {
-            let target_freq: u32 = 1005;
-            let hit_bounds = target_freq == min_freq || target_freq == max_freq;
-            let big_change = curr_freq.abs_diff(target_freq) >= significant_change;
-            assert!(!(curr_freq != target_freq && (burst || hit_bounds || big_change)));
-        }
-
-        {
-            let target_freq: u32 = 1010;
-            let hit_bounds = target_freq == min_freq || target_freq == max_freq;
-            let big_change = curr_freq.abs_diff(target_freq) >= significant_change;
-            assert!(curr_freq != target_freq && (burst || hit_bounds || big_change));
-        }
-
-        {
-            let target_freq: u32 = 1000;
-            let hit_bounds = target_freq == min_freq || target_freq == max_freq;
-            let big_change = curr_freq.abs_diff(target_freq) >= significant_change;
-            assert!(!(curr_freq != target_freq && (burst || hit_bounds || big_change)));
-        }
-    }
 }

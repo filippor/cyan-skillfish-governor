@@ -11,6 +11,9 @@ pub enum AppError {
     #[error(transparent)]
     Smu(#[from] cyan_skillfish_governor_smu::SmuError),
 
+    #[error(transparent)]
+    TryRecv(#[from] std::sync::mpsc::TryRecvError),
+
     #[error("{0}")]
     Message(String),
 }

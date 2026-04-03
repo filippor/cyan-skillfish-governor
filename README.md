@@ -225,32 +225,28 @@ Top-level keys:
 Use [default-config.toml](default-config.toml) as a baseline profile.
 
 ## Performance Mode Script
+
 The configuration option `dbus.enabled` must be set to `true`.
 
 Performance mode:
-- sets frequency to max by default,
-- reduces load-check overhead (and skips load calculation entirely when `gpu-usage.fix-metrics` is disabled),
-- keeps thermal throttling active.
+- Sets frequency to max by default,
+- Reduces load-check overhead (and skips load calculation entirely when `gpu-usage.fix-metrics` is disabled),
+- Keeps thermal throttling active.
 
-You can also set a fixed frequency while in performance mode with `--fixed-frequency <MHz>`.
-
-It controls performance mode over system D-Bus using interface:
-- Service: `com.cyan.SkillFishGovernor`
-- Object: `/com/cyan/SkillFishGovernor`
-- Interface: `com.cyan.SkillFishGovernor.PerformanceMode`
+The script communicates with the governor via D-Bus (see [D-Bus Interface](#dbus-interface-complete-reference) section).
 
 Prerequisites:
-- Governor service must be running.
-- `dbus.enabled = true` in configuration.
-- `busctl` (preferred) or `dbus-send` available.
+- Governor service must be running and D-Bus enabled.
+- `busctl` (preferred) or `dbus-send` available on the system.
 
 ### Script modes
 
-1. Toggle explicitly:
+1. Toggle and set frequency:
 
 ```bash
 cyan-skillfish-performance-mode --on
 cyan-skillfish-performance-mode --fixed-frequency 1200
+cyan-skillfish-performance-mode --range 500 1500
 cyan-skillfish-performance-mode --off
 cyan-skillfish-performance-mode --status
 ```
@@ -260,6 +256,7 @@ cyan-skillfish-performance-mode --status
 ```bash
 cyan-skillfish-performance-mode mangohud %command%
 cyan-skillfish-performance-mode --fixed-frequency 1200 mangohud %command%
+cyan-skillfish-performance-mode --range 700 1500 some-game
 ```
 
 3. Steam launch option example:
@@ -277,22 +274,41 @@ cyan-skillfish-performance-mode --fixed-frequency 1200 -- mangohud %command%
 
 In wrapper mode, the script installs a cleanup trap, so performance mode is disabled when the wrapped process exits (including Ctrl+C / TERM paths handled by the script).
 
-## Frequency Range Interface
+## D-Bus Interface Complete Reference
 
-Controls min/max frequency limits over D-Bus (adaptive mode only).  
-`0` = no limit. Thermal throttling still applies.
+D-Bus service exposed when `dbus.enabled = true`:
 
 - **Service**: `com.cyan.SkillFishGovernor`
-- **Object**: `/com/cyan/SkillFishGovernor/FrequencyRange`
-- **Interface**: `com.cyan.SkillFishGovernor.FrequencyRange`
-- **Method**: `SetRange(min, max)` (MHz)
-- **Properties (read-only)**: `AvailableMin`, `AvailableMax`
+- **Object**: `/com/cyan/SkillFishGovernor`
+- **Interface**: `com.cyan.SkillFishGovernor.PerformanceMode`
 
-Examples:
+### Methods
+
+- `Enable()` — Enable performance mode (max frequency, reduced load overhead)
+- `Disable()` — Disable performance mode (return to adaptive frequency control)
+- `SetFixedFrequency(frequency: u32)` — Set fixed frequency in MHz (enables performance mode)
+- `SetRange(min: u32, max: u32)` — Set frequency range limits (MHz). Use `0` for no limit:
+  - `SetRange(0, 1500)` — cap to 1500 MHz
+  - `SetRange(500, 0)` — floor to 500 MHz
+  - `SetRange(500, 1500)` — set both limits
+  - `SetRange(0, 0)` — clear all limits (full range)
+  - Thermal throttling still applies regardless of range
+
+### Properties
+
+- `Enabled` (bool, read/write) — Get or set performance mode enabled state
+
+### Examples
+
 ```bash
-busctl call --system com.cyan.SkillFishGovernor /com/cyan/SkillFishGovernor/FrequencyRange com.cyan.SkillFishGovernor.FrequencyRange SetRange uu 500 1500
-busctl call --system com.cyan.SkillFishGovernor /com/cyan/SkillFishGovernor/FrequencyRange com.cyan.SkillFishGovernor.FrequencyRange SetRange uu 700 0
-busctl call --system com.cyan.SkillFishGovernor /com/cyan/SkillFishGovernor/FrequencyRange com.cyan.SkillFishGovernor.FrequencyRange SetRange uu 0 0
+# Using busctl (preferred)
+busctl --system call com.cyan.SkillFishGovernor /com/cyan/SkillFishGovernor com.cyan.SkillFishGovernor.PerformanceMode Enable
+busctl --system call com.cyan.SkillFishGovernor /com/cyan/SkillFishGovernor com.cyan.SkillFishGovernor.PerformanceMode SetFixedFrequency u 1200
+busctl --system call com.cyan.SkillFishGovernor /com/cyan/SkillFishGovernor com.cyan.SkillFishGovernor.PerformanceMode SetRange uu 500 1500
+busctl --system call com.cyan.SkillFishGovernor /com/cyan/SkillFishGovernor com.cyan.SkillFishGovernor.PerformanceMode Disable
+
+# Using dbus-send (if busctl unavailable)
+dbus-send --system --dest=com.cyan.SkillFishGovernor /com/cyan/SkillFishGovernor com.cyan.SkillFishGovernor.PerformanceMode.SetRange uint32:500 uint32:1500
 ```
 
 ## Troubleshooting
