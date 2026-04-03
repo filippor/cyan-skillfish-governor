@@ -1,5 +1,7 @@
 use crate::app_error::Result;
-use log::warn;
+use crate::gpu::GPU;
+use log::{info, warn};
+use std::ops::RangeInclusive;
 use std::{
     collections::BTreeMap,
     io::{Error as IoError, ErrorKind},
@@ -67,6 +69,7 @@ pub struct FrequencyThresholdConfig {
     pub significant_change: u32,
 }
 
+#[derive(Clone, Copy)]
 pub struct TemperatureConfig {
     pub throttling_temp: Option<u32>,
     pub throttling_recovery_temp: Option<u32>,
@@ -91,6 +94,21 @@ pub struct FrequencyRangeConfig {
     pub max: Option<u32>,
 }
 
+pub struct GovernorParams {
+    pub burst_freq_step: u32,
+    pub freq_step: u32,
+    pub allowed_frequency_range: RangeInclusive<u32>,
+    pub initial_frequency_range: RangeInclusive<u32>,
+    pub flush_every: u32,
+    pub temperature: TemperatureConfig,
+    pub significant_change: u32,
+    pub burst_samples: Option<u32>,
+    pub up_thresh: f32,
+    pub down_thresh: f32,
+    pub down_events: i16,
+    pub adjustment_interval: Duration,
+}
+
 impl Config {
     pub fn new(config_text: std::io::Result<String>) -> Result<Config> {
         let config = config_text?.parse::<Table>()?;
@@ -110,6 +128,47 @@ impl Config {
             dbus: parse_dbus_config(&config),
             frequency_range: parse_frequency_range_config(&config),
         })
+    }
+
+    pub fn to_governor_params(&self, gpu: &GPU) -> GovernorParams {
+        let adjustment_millis = self.timing.adjustment_interval.as_millis() as f32;
+        let allowed_frequency_range = gpu.min_freq..=gpu.max_freq;
+        let initial_frequency_range = {
+            let min = self.frequency_range.min.unwrap_or(gpu.min_freq).clamp(
+                *allowed_frequency_range.start(),
+                *allowed_frequency_range.end(),
+            );
+            let max = self.frequency_range.max.unwrap_or(gpu.max_freq).clamp(
+                *allowed_frequency_range.start(),
+                *allowed_frequency_range.end(),
+            );
+            min..=max
+        };
+        let result = GovernorParams {
+            burst_freq_step: (self.timing.ramp_rate_burst * adjustment_millis) as u32,
+            freq_step: (self.timing.ramp_rate * adjustment_millis) as u32,
+            allowed_frequency_range,
+            initial_frequency_range,
+            flush_every: self.gpu_usage.flush_every,
+            temperature: self.temperature,
+            significant_change: self.frequency_thresholds.significant_change,
+            burst_samples: self.timing.burst_samples,
+            up_thresh: self.load_target.up_thresh,
+            down_thresh: self.load_target.down_thresh,
+            down_events: self.timing.down_events,
+            adjustment_interval: self.timing.adjustment_interval,
+        };
+        info!(
+            "allowed frequency range {}..={}",
+            result.allowed_frequency_range.start(),
+            result.allowed_frequency_range.end()
+        );
+        info!(
+            "initial frequency range: {}..={}",
+            result.initial_frequency_range.start(),
+            result.initial_frequency_range.end()
+        );
+        result
     }
 }
 
@@ -858,5 +917,31 @@ mod tests {
         let config = parse_config(config_text);
         assert_eq!(config.frequency_range.min, None);
         assert_eq!(config.frequency_range.max, Some(1500));
+    }
+
+    #[test]
+    fn parse_frequency_range_with_underscore_section_name() {
+        let config_text = r#"
+            [frequency_range]
+            min = 600
+            max = 1700
+        "#;
+        let config = parse_config(config_text);
+        assert_eq!(config.frequency_range.min, Some(600));
+        assert_eq!(config.frequency_range.max, Some(1700));
+    }
+
+    #[test]
+    fn parse_gpu_usage_underscore_section_and_key_aliases() {
+        let config_text = r#"
+            [gpu_usage]
+            fix_metric = false
+            flush-every = 7
+            method = "process"
+        "#;
+        let config = parse_config(config_text);
+        assert_eq!(config.gpu_usage.fix_metrics, false);
+        assert_eq!(config.gpu_usage.flush_every, 7);
+        assert!(matches!(config.gpu_usage.method, GpuUsageMethod::Process));
     }
 }
