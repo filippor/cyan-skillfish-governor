@@ -1,9 +1,11 @@
 use crate::app_error::Result;
 use log::{error, info};
+use std::ops::RangeInclusive;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use zbus::blocking::ConnectionBuilder;
+use zbus::fdo;
 
 /// Commands sent from D-Bus to the main loop
 #[derive(Debug, Clone)]
@@ -20,6 +22,8 @@ const INTERFACE_NAME: &str = "com.cyan.SkillFishGovernor.PerformanceMode";
 struct PerformanceModeIface {
     enabled: Arc<AtomicBool>,
     tx: Sender<PerformanceModeCommand>,
+    allowed_min: u32,
+    allowed_max: u32,
 }
 
 impl PerformanceModeIface {
@@ -69,15 +73,29 @@ impl PerformanceModeIface {
     fn set_enabled(&self, value: bool) {
         self.send_mode_update(value);
     }
-    fn set_range(&self, min: u32, max: u32) {
-        if min > max && max != 0 {
-            error!("Invalid range: min {} > max {}", min, max);
-            return;
+    fn set_range(&self, min: u32, max: u32) -> fdo::Result<()> {
+        if max != 0 && min > max {
+            return Err(fdo::Error::InvalidArgs(format!(
+                "Invalid range: min {} > max {}",
+                min, max
+            )));
         }
-
+        if min != 0 && !(self.allowed_min..=self.allowed_max).contains(&min) {
+            return Err(fdo::Error::InvalidArgs(format!(
+                "min {} out of allowed range {}..={} MHz",
+                min, self.allowed_min, self.allowed_max
+            )));
+        }
+        if max != 0 && !(self.allowed_min..=self.allowed_max).contains(&max) {
+            return Err(fdo::Error::InvalidArgs(format!(
+                "max {} out of allowed range {}..={} MHz",
+                max, self.allowed_min, self.allowed_max
+            )));
+        }
         if let Err(e) = self.tx.send(PerformanceModeCommand::SetRange(min, max)) {
             error!("Failed to send frequency range command: {}", e);
         }
+        Ok(())
     }
 }
 
@@ -87,11 +105,13 @@ pub struct DbusService;
 impl DbusService {
     /// Start the D-Bus service in a background thread
     /// Returns a receiver for performance mode commands
-    pub fn start() -> Result<Receiver<PerformanceModeCommand>> {
+    pub fn start(allowed_range: &RangeInclusive<u32>) -> Result<Receiver<PerformanceModeCommand>> {
         let (tx, rx) = mpsc::channel();
+        let allowed_min = *allowed_range.start();
+        let allowed_max = *allowed_range.end();
 
         std::thread::spawn(move || {
-            if let Err(e) = Self::run_service(tx) {
+            if let Err(e) = Self::run_service(tx, allowed_min, allowed_max) {
                 error!("D-Bus service error: {}", e);
             }
         });
@@ -100,9 +120,18 @@ impl DbusService {
         Ok(rx)
     }
 
-    fn run_service(tx: Sender<PerformanceModeCommand>) -> Result<()> {
+    fn run_service(
+        tx: Sender<PerformanceModeCommand>,
+        allowed_min: u32,
+        allowed_max: u32,
+    ) -> Result<()> {
         let enabled = Arc::new(AtomicBool::new(false));
-        let iface = PerformanceModeIface { enabled, tx };
+        let iface = PerformanceModeIface {
+            enabled,
+            tx,
+            allowed_min,
+            allowed_max,
+        };
 
         let _connection = ConnectionBuilder::system()
             .map_err(|err| format!("failed to create D-Bus system connection: {err}"))?

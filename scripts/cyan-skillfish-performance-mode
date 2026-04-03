@@ -94,19 +94,30 @@ call_set_fixed_frequency() {
 call_set_range() {
     local min="$1"
     local max="$2"
+    local error_output
 
     if has_cmd busctl; then
-        busctl --system call "$SERVICE_NAME" "$OBJECT_PATH" "$INTERFACE" SetRange u u "$min" "$max" >/dev/null 2>&1
-        return $?
+        error_output=$(busctl --system call "$SERVICE_NAME" "$OBJECT_PATH" "$INTERFACE" SetRange uu "$min" "$max" 2>&1)
+        if [ $? -eq 0 ]; then
+            return 0
+        else
+            echo "$error_output" >&2
+            return 1
+        fi
     fi
 
     if has_cmd dbus-send; then
-        dbus-send --system \
+        error_output=$(dbus-send --system \
             --dest="$SERVICE_NAME" \
             "$OBJECT_PATH" \
             "$INTERFACE.SetRange" \
-            uint32:"$min" uint32:"$max" >/dev/null 2>&1
-        return $?
+            uint32:"$min" uint32:"$max" 2>&1)
+        if [ $? -eq 0 ]; then
+            return 0
+        else
+            echo "$error_output" >&2
+            return 1
+        fi
     fi
 
     echo "Error: neither busctl nor dbus-send is installed." >&2
@@ -225,8 +236,6 @@ case "$1" in
 
             exit 0
         else
-            echo "Error: failed to set frequency range. Is the service running?" >&2
-            echo "Try: sudo systemctl status cyan-skillfish-governor-smu" >&2
             exit 1
         fi
         ;;
