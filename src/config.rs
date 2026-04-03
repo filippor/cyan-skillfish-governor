@@ -46,6 +46,7 @@ pub struct Config {
     pub gpu_usage: GpuUsageConfig,
     pub gpu: GpuConfig,
     pub dbus: DbusConfig,
+    pub frequency_range: FrequencyRangeConfig,
 }
 
 pub struct TimingConfig {
@@ -85,6 +86,11 @@ pub struct DbusConfig {
     pub enabled: bool,
 }
 
+pub struct FrequencyRangeConfig {
+    pub min: Option<u32>,
+    pub max: Option<u32>,
+}
+
 impl Config {
     pub fn new(config_text: std::io::Result<String>) -> Result<Config> {
         let config = config_text?.parse::<Table>()?;
@@ -102,6 +108,7 @@ impl Config {
                 set_method: parse_gpu_set_method(&config),
             },
             dbus: parse_dbus_config(&config),
+            frequency_range: parse_frequency_range_config(&config),
         })
     }
 }
@@ -454,6 +461,35 @@ fn parse_dbus_config(config: &Table) -> DbusConfig {
     DbusConfig { enabled }
 }
 
+fn parse_frequency_range_config(config: &Table) -> FrequencyRangeConfig {
+    let freq_range = config
+        .get("frequency-range")
+        .or_else(|| config.get("frequency_range"))
+        .and_then(|t| t.as_table());
+
+    let min = parse_integer_in_range_optional(
+        freq_range,
+        "min",
+        "frequency-range.min",
+        0..=i64::from(u32::MAX),
+        None,
+        None,
+    )
+    .map(|v| v as u32);
+
+    let max = parse_integer_in_range_optional(
+        freq_range,
+        "max",
+        "frequency-range.max",
+        0..=i64::from(u32::MAX),
+        None,
+        None,
+    )
+    .map(|v| v as u32);
+
+    FrequencyRangeConfig { min, max }
+}
+
 fn nested_table<'a>(table: Option<&'a Table>, key: &str) -> Option<&'a Table> {
     table
         .and_then(|t| t.get(key))
@@ -780,5 +816,47 @@ mod tests {
         let config_text = "";
         let config = parse_config(config_text);
         assert_eq!(config.temperature.throttling_temp, Some(85));
+    }
+
+    #[test]
+    fn parse_frequency_range_returns_none_when_missing() {
+        let config_text = "";
+        let config = parse_config(config_text);
+        assert_eq!(config.frequency_range.min, None);
+        assert_eq!(config.frequency_range.max, None);
+    }
+
+    #[test]
+    fn parse_frequency_range_with_explicit_values() {
+        let config_text = r#"
+            [frequency-range]
+            min = 500
+            max = 1800
+        "#;
+        let config = parse_config(config_text);
+        assert_eq!(config.frequency_range.min, Some(500));
+        assert_eq!(config.frequency_range.max, Some(1800));
+    }
+
+    #[test]
+    fn parse_frequency_range_with_only_min() {
+        let config_text = r#"
+            [frequency-range]
+            min = 700
+        "#;
+        let config = parse_config(config_text);
+        assert_eq!(config.frequency_range.min, Some(700));
+        assert_eq!(config.frequency_range.max, None);
+    }
+
+    #[test]
+    fn parse_frequency_range_with_only_max() {
+        let config_text = r#"
+            [frequency-range]
+            max = 1500
+        "#;
+        let config = parse_config(config_text);
+        assert_eq!(config.frequency_range.min, None);
+        assert_eq!(config.frequency_range.max, Some(1500));
     }
 }

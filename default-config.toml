@@ -86,3 +86,10 @@ voltage = 1035
 frequency = 2200
 voltage = 1050
 
+# Optional: set initial frequency range limits
+# Both min and max can be omitted or set to 0 for no limit
+# [frequency-range]
+# min = 500    # MHz
+# max = 1800   # MHz
+
+

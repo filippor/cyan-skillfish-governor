@@ -189,6 +189,11 @@ Top-level keys:
 - `dbus`
   - `enabled` (bool, default: `false`): enable D-Bus performance-mode service.
 
+- `frequency-range` (optional)
+  - `min` (optional integer, MHz): initial minimum frequency limit. Default: hardware minimum.
+  - `max` (optional integer, MHz): initial maximum frequency limit. Default: hardware maximum.
+  - Both can be omitted for full range. Can be overridden at runtime via D-Bus.
+
 - `timing`
   - `intervals` (microseconds)
     - `sample` (default: `2000`): sampling period. Used by `gpu-usage.method = "busy-flag"`.

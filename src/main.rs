@@ -71,7 +71,19 @@ fn main() -> Result<()> {
     let mut status = 0;
     let mut usage_fix_cycle = 0;
     let mut max_freq = gpu.max_freq;
-    let mut allowed_range = gpu.min_freq..=gpu.max_freq;
+    let mut allowed_range = {
+        let min = config
+            .frequency_range
+            .min
+            .unwrap_or(gpu.min_freq)
+            .clamp(*default_allowed_range.start(), *default_allowed_range.end());
+        let max = config
+            .frequency_range
+            .max
+            .unwrap_or(gpu.max_freq)
+            .clamp(*default_allowed_range.start(), *default_allowed_range.end());
+        min..=max
+    };
     let mut performance_mode = false;
 
     let adjustment_millis = config.timing.adjustment_interval.as_millis() as f32;
@@ -79,6 +91,14 @@ fn main() -> Result<()> {
     let freq_step = (config.timing.ramp_rate * adjustment_millis) as u32;
 
     info!("freq min {} max {}", gpu.min_freq, max_freq);
+
+    if config.frequency_range.min.is_some() || config.frequency_range.max.is_some() {
+        info!(
+            "initial frequency range: {}..={}",
+            allowed_range.start(),
+            allowed_range.end()
+        );
+    }
 
     loop {
         let loop_start = Instant::now();
@@ -280,16 +300,14 @@ fn handle_dbus_performance_mode_command(
                 info!("Frequency range set: min={} MHz, max={} MHz", mi, ma);
                 Ok((false, mi..=ma))
             }
-            (mi, ma) => {
-                Err(format!(
-                    "Invalid frequency range request: min={} MHz, max={} MHz (allowed {}..={} MHz)",
-                    mi,
-                    ma,
-                    allowed_freq_range.start(),
-                    *allowed_freq_range.end()
-                )
-                .into())
-            }
+            (mi, ma) => Err(format!(
+                "Invalid frequency range request: min={} MHz, max={} MHz (allowed {}..={} MHz)",
+                mi,
+                ma,
+                allowed_freq_range.start(),
+                *allowed_freq_range.end()
+            )
+            .into()),
         },
     }
 }
