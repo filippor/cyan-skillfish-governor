@@ -11,21 +11,12 @@ pub enum PerformanceModeCommand {
     Enable,
     Disable,
     SetFixedFrequency(u32),
-}
-
-/// Commands sent from D-Bus to the main loop (Frequency Range)
-#[derive(Debug, Clone)]
-pub enum FrequencyRangeCommand {
     SetRange(u32, u32),
 }
 
 const SERVICE_NAME: &str = "com.cyan.SkillFishGovernor";
 const OBJECT_PATH: &str = "/com/cyan/SkillFishGovernor";
 const INTERFACE_NAME: &str = "com.cyan.SkillFishGovernor.PerformanceMode";
-
-const FREQ_RANGE_INTERFACE: &str = "com.cyan.SkillFishGovernor.FrequencyRange";
-const FREQ_RANGE_PATH: &str = "/com/cyan/SkillFishGovernor/FrequencyRange";
-
 struct PerformanceModeIface {
     enabled: Arc<AtomicBool>,
     tx: Sender<PerformanceModeCommand>,
@@ -78,44 +69,15 @@ impl PerformanceModeIface {
     fn set_enabled(&self, value: bool) {
         self.send_mode_update(value);
     }
-}
-
-struct FrequencyRangeIface {
-    available_min: u32,
-    available_max: u32,
-    tx: Sender<FrequencyRangeCommand>,
-}
-
-#[zbus::interface(name = "com.cyan.SkillFishGovernor.FrequencyRange")]
-impl FrequencyRangeIface {
     fn set_range(&self, min: u32, max: u32) {
-
         if min > max && max != 0 {
             error!("Invalid range: min {} > max {}", min, max);
             return;
         }
-        if min > self.available_max {
-            error!("min frequency {} exceeds available maximum {}", min, self.available_max);
-            return;
-        }
-        if max < self.available_min && max != 0 {
-            error!("max frequency {} less than available minimum {}", max, self.available_min);
-            return;
-        }
 
-        if let Err(e) = self.tx.send(FrequencyRangeCommand::SetRange(min, max)) {
+        if let Err(e) = self.tx.send(PerformanceModeCommand::SetRange(min, max)) {
             error!("Failed to send frequency range command: {}", e);
         }
-    }
-
-    #[zbus(property)]
-    fn available_min(&self) -> u32 {
-        self.available_min
-    }
-
-    #[zbus(property)]
-    fn available_max(&self) -> u32 {
-        self.available_max
     }
 }
 
@@ -124,40 +86,23 @@ pub struct DbusService;
 
 impl DbusService {
     /// Start the D-Bus service in a background thread
-    /// Returns a pair of receivers: first for `PerformanceModeCommand`, second for `FrequencyRangeCommand`.
-    pub fn start(available_min: u32,available_max: u32,) -> Result<(
-        Receiver<PerformanceModeCommand>,
-        Receiver<FrequencyRangeCommand>,
-    )> {
+    /// Returns a receiver for performance mode commands
+    pub fn start() -> Result<Receiver<PerformanceModeCommand>> {
         let (tx, rx) = mpsc::channel();
 
-        let (fr_tx, fr_rx) = mpsc::channel();
-
         std::thread::spawn(move || {
-            if let Err(e) = Self::run_service(tx, fr_tx, available_min, available_max) {
+            if let Err(e) = Self::run_service(tx) {
                 error!("D-Bus service error: {}", e);
             }
         });
 
         info!("D-Bus service thread started");
-        Ok((rx, fr_rx))
+        Ok(rx)
     }
 
-    fn run_service(tx: Sender<PerformanceModeCommand>,
-        fr_tx: Sender<FrequencyRangeCommand>,
-        available_min: u32,
-        available_max: u32,
-    ) -> Result<()> {
-
+    fn run_service(tx: Sender<PerformanceModeCommand>) -> Result<()> {
         let enabled = Arc::new(AtomicBool::new(false));
         let iface = PerformanceModeIface { enabled, tx };
-
-        let fr_iface = FrequencyRangeIface {
-            available_min,
-            available_max,
-            tx: fr_tx,
-        };
-
 
         let _connection = ConnectionBuilder::system()
             .map_err(|err| format!("failed to create D-Bus system connection: {err}"))?
@@ -167,20 +112,12 @@ impl DbusService {
             .map_err(|err| {
                 format!("failed to export D-Bus object {OBJECT_PATH} ({INTERFACE_NAME}): {err}")
             })?
-            .serve_at(FREQ_RANGE_PATH, fr_iface)
-            .map_err(|err| {
-                format!("failed to export D-Bus object {FREQ_RANGE_PATH} ({FREQ_RANGE_INTERFACE}): {err}")
-            })?
             .build()
             .map_err(|err| format!("failed to finalize D-Bus connection: {err}"))?;
 
         info!(
             "D-Bus performance mode service ready: {} {} {}",
             SERVICE_NAME, OBJECT_PATH, INTERFACE_NAME
-        );
-        info!(
-            "D-Bus frequency range service ready: {} {} {}",
-            SERVICE_NAME, FREQ_RANGE_PATH, FREQ_RANGE_INTERFACE
         );
 
         loop {

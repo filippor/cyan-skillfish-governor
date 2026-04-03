@@ -10,18 +10,21 @@ usage() {
 Usage: cyan-skillfish-performance-mode [OPTIONS] [COMMAND...]
 
 Options:
-    --on        Enable performance mode
-    --fixed-frequency <MHz> Enable performance mode with fixed frequency
-  --off       Disable performance mode
-  --status    Show performance mode status
-  -h, --help  Show this help message
+    --on                  Enable performance mode
+    --fixed-frequency <MHz>
+                          Enable performance mode with fixed frequency
+    --range <min> <max>   Set frequency range (MHz, use 0 for no limit)
+    --off                 Disable performance mode
+    --status              Show performance mode status
+    -h, --help            Show this help message
 
 Steam launch example:
   Add to Steam launch options: cyan-skillfish-performance-mode %command%
 
 Command wrapper mode:
   cyan-skillfish-performance-mode some-game
-    cyan-skillfish-performance-mode --fixed-frequency 1200 some-game
+  cyan-skillfish-performance-mode --fixed-frequency 1200 some-game
+  cyan-skillfish-performance-mode --range 500 1500 some-game
   - Enables performance mode before running the command
   - Disables performance mode when the command exits
 EOF
@@ -81,6 +84,28 @@ call_set_fixed_frequency() {
             "$OBJECT_PATH" \
             "$INTERFACE.SetFixedFrequency" \
             uint32:"$frequency" >/dev/null 2>&1
+        return $?
+    fi
+
+    echo "Error: neither busctl nor dbus-send is installed." >&2
+    return 1
+}
+
+call_set_range() {
+    local min="$1"
+    local max="$2"
+
+    if has_cmd busctl; then
+        busctl --system call "$SERVICE_NAME" "$OBJECT_PATH" "$INTERFACE" SetRange u u "$min" "$max" >/dev/null 2>&1
+        return $?
+    fi
+
+    if has_cmd dbus-send; then
+        dbus-send --system \
+            --dest="$SERVICE_NAME" \
+            "$OBJECT_PATH" \
+            "$INTERFACE.SetRange" \
+            uint32:"$min" uint32:"$max" >/dev/null 2>&1
         return $?
     fi
 
@@ -164,6 +189,43 @@ case "$1" in
             exit 0
         else
             echo "Error: failed to set fixed frequency. Is the service running?" >&2
+            echo "Try: sudo systemctl status cyan-skillfish-governor-smu" >&2
+            exit 1
+        fi
+        ;;
+    --range)
+        if [ "$#" -lt 3 ]; then
+            echo "Error: --range requires two numeric arguments (min max in MHz)." >&2
+            usage
+            exit 1
+        fi
+
+        if [[ ! "$2" =~ ^[0-9]+$ ]] || [[ ! "$3" =~ ^[0-9]+$ ]]; then
+            echo "Error: frequency range values must be non-negative integers (MHz)." >&2
+            exit 1
+        fi
+
+        if call_set_range "$2" "$3"; then
+            echo "Frequency range set: min=$2 MHz, max=$3 MHz"
+
+            if [ "$#" -gt 3 ]; then
+                shift 3
+                if [ "${1:-}" = "--" ]; then
+                    shift
+                fi
+
+                if [ "$#" -eq 0 ]; then
+                    echo "Error: no command provided after --range" >&2
+                    exit 1
+                fi
+
+                trap cleanup EXIT INT TERM
+                exec "$@"
+            fi
+
+            exit 0
+        else
+            echo "Error: failed to set frequency range. Is the service running?" >&2
             echo "Try: sudo systemctl status cyan-skillfish-governor-smu" >&2
             exit 1
         fi
