@@ -264,7 +264,7 @@ fn compute_frequency_decision(
         }
     }
 
-    target_freq = target_freq.clamp(requested_start, max_freq);
+    target_freq = target_freq.clamp(requested_start.min(max_freq),  max_freq);
 
     let hit_bounds = target_freq == requested_start || target_freq == max_freq;
     let big_change = curr_freq.abs_diff(target_freq) >= params.significant_change;
