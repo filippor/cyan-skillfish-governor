@@ -37,11 +37,13 @@ Requires(postun): systemd
 %cargo_generate_buildrequires
 
 %build
+export CYAN_SKILLFISH_GOVERNOR_VERSION=%{version}
 %cargo_build
 %{cargo_license_summary}
 %{cargo_license} > LICENSE.dependencies
 
 %install
+export CYAN_SKILLFISH_GOVERNOR_VERSION=%{version}
 %cargo_install
 mkdir -p %{buildroot}/%{_unitdir}
 cp %name.service %{buildroot}/%{_unitdir}/%name.service

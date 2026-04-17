@@ -3,8 +3,12 @@ use std::process::Command;
 fn main() {
     println!("cargo:rerun-if-changed=.git/HEAD");
     println!("cargo:rerun-if-changed=.git/refs");
+    println!("cargo:rerun-if-env-changed=CYAN_SKILLFISH_GOVERNOR_VERSION");
 
-    let version = git_describe().unwrap_or_else(|| env!("CARGO_PKG_VERSION").to_string());
+    let version = std::env::var("CYAN_SKILLFISH_GOVERNOR_VERSION")
+        .ok()
+        .filter(|v| !v.trim().is_empty())
+        .unwrap_or_else(|| git_describe().unwrap_or_else(|| env!("CARGO_PKG_VERSION").to_string()));
     println!("cargo:rustc-env=GIT_VERSION={version}");
 }
 
