@@ -22,7 +22,11 @@ pub struct Governor {
 }
 
 impl Governor {
-   pub fn new(params: GovernorParams, gpu: GPU, gpu_usage_fix: Option<GpuUsageFix>) -> Result<Self> {
+    pub fn new(
+        params: GovernorParams,
+        gpu: GPU,
+        gpu_usage_fix: Option<GpuUsageFix>,
+    ) -> Result<Self> {
         let curr_freq = gpu.get_freq()?;
         let target_freq = *params.allowed_frequency_range.start();
         let max_freq = *params.allowed_frequency_range.end();
@@ -45,12 +49,12 @@ impl Governor {
     pub fn run_iteration(&mut self) -> Result<()> {
         let loop_start = Instant::now();
 
-        let (average_load, burst_length) =
-            if !self.performance_mode || self.gpu_usage_fix.is_some() {
-                self.gpu.poll_and_get_load()?
-            } else {
-                (1.0, 0)
-            };
+        let (average_load, burst_length) = if !self.performance_mode || self.gpu_usage_fix.is_some()
+        {
+            self.gpu.poll_and_get_load()?
+        } else {
+            (1.0, 0)
+        };
 
         if let Some(fix) = self.gpu_usage_fix.as_mut() {
             self.usage_fix_cycle += 1;
@@ -93,8 +97,7 @@ impl Governor {
         }
 
         let target_cycle_interval = if self.performance_mode {
-            self
-                .params
+            self.params
                 .adjustment_interval
                 .checked_mul(self.params.flush_every.max(1))
                 .unwrap_or(Duration::MAX)
@@ -109,7 +112,7 @@ impl Governor {
         Ok(())
     }
 
-     pub fn apply_enable_command(&mut self) {
+    pub fn apply_enable_command(&mut self) {
         info!("Performance mode enabled");
         self.performance_mode = true;
         self.requested_range = self.params.allowed_frequency_range.clone();
@@ -140,6 +143,9 @@ impl Governor {
         );
         self.performance_mode = true;
         self.requested_range = *self.params.initial_frequency_range.start()..=frequency;
+        if self.max_freq > frequency {
+            self.max_freq = frequency;
+        }
     }
 
     pub fn apply_range_command(&mut self, min: u32, max: u32) {
@@ -197,6 +203,9 @@ impl Governor {
                 );
             }
         }
+        if self.max_freq > *self.requested_range.end() {
+            self.max_freq = *self.requested_range.end();
+        }
     }
 
     pub fn into_resources(self) -> (GPU, Option<GpuUsageFix>) {
@@ -221,7 +230,6 @@ impl Governor {
 
         Ok(temp)
     }
-   
 }
 
 fn compute_frequency_decision(
@@ -264,7 +272,7 @@ fn compute_frequency_decision(
         }
     }
 
-    target_freq = target_freq.clamp(requested_start.min(max_freq),  max_freq);
+    target_freq = target_freq.clamp(requested_start.min(max_freq), max_freq);
 
     let hit_bounds = target_freq == requested_start || target_freq == max_freq;
     let big_change = curr_freq.abs_diff(target_freq) >= params.significant_change;
