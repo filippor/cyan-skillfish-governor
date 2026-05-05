@@ -40,6 +40,15 @@ jobs:
     - name: Run tests
       run: cargo test --verbose
 
+    - name: Install cargo-deb
+      run: cargo install --locked cargo-deb
+
+    - name: Build Debian package
+      run: |
+        cargo deb --no-build
+        DEB_FILE=$(ls -t target/debian/*.deb | head -n 1)
+        echo "DEB_FILE=${DEB_FILE}" >> $GITHUB_ENV
+
     - name: Determine version
       id: version
       run: |
@@ -77,8 +86,10 @@ jobs:
 
         # Create checksums
         sha256sum "${PKG_NAME}.tar.gz" > "${PKG_NAME}.tar.gz.sha256"
+        sha256sum "${{ env.DEB_FILE }}" > "${{ env.DEB_FILE }}.sha256"
 
         echo "PKG_NAME=${PKG_NAME}" >> $GITHUB_ENV
+
 
     - name: Generate changelog
       id: changelog
@@ -104,6 +115,8 @@ jobs:
         files: |
           ${{ env.PKG_NAME }}.tar.gz
           ${{ env.PKG_NAME }}.tar.gz.sha256
+          ${{ env.DEB_FILE }}
+          ${{ env.DEB_FILE }}.sha256
         draft: false
         prerelease: false
         generate_release_notes: true

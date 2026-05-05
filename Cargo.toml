@@ -16,3 +16,11 @@ clap-verbosity-flag = "2.2.3"
 env_logger = "0.11"
 log = "0.4"
 zbus = { version = "4", features = ["blocking"] }
+[package.metadata.deb]
+assets = [
+    "$auto",
+    {source="scripts/cyan-skillfish-performance-mode", dest="/usr/bin/cyan-skillfish-performance-mode", mode="755"},
+    {source="cyan-skillfish-governor-smu.service", dest="/usr/lib/systemd/system/cyan-skillfish-governor-smu.service", mode ="644"},
+    {source="com.cyan.SkillFishGovernor.conf", dest="usr/share/dbus-1/system.d/com.cyan.SkillFishGovernor.conf", mode ="644"},
+    {source="default-config.toml", dest="/etc/cyan-skillfish-governor-smu/config.toml", mode="644"}
+]

@@ -31,6 +31,15 @@ jobs:
     - name: Run tests
       run: cargo test --verbose || true
 
+    - name: Install cargo-deb
+      run: cargo install --locked cargo-deb
+
+    - name: Build Debian package
+      run: |
+        cargo deb --no-build
+        DEB_FILE=$(ls -t target/debian/*.deb | head -n 1)
+        echo "DEB_FILE=${DEB_FILE}" >> $GITHUB_ENV
+
     - name: Create package
       run: |
         # Create version based on commit
@@ -65,7 +74,9 @@ jobs:
       uses: actions/upload-artifact@v4
       with:
         name: ${{ env.PKG_NAME }}
-        path: ${{ env.PKG_NAME }}.tar.gz
+        path: |
+          ${{ env.PKG_NAME }}.tar.gz
+          ${{ env.DEB_FILE }}
         retention-days: 30
 
     - name: Update prerelease
@@ -81,7 +92,9 @@ jobs:
           Branch: ${{ github.ref_name }}
 
           ⚠️ This is a pre-release build and may be unstable.
-        files: ${{ env.PKG_NAME }}.tar.gz
+        files: |
+          ${{ env.PKG_NAME }}.tar.gz
+          ${{ env.DEB_FILE }}
         draft: false
         prerelease: true
       env:
