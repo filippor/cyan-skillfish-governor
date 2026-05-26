@@ -43,7 +43,7 @@ jobs:
 
         # Copy files
         cp target/release/cyan-skillfish-governor-smu "${PKG_NAME}/"
-        cp config.toml "${PKG_NAME}/"
+        cp default-config.toml "${PKG_NAME}/config.toml"
         cp README.md "${PKG_NAME}/" || true
 
         if [ -d "scripts" ]; then

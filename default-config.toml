@@ -1,7 +1,7 @@
 # us
 [timing.intervals]
-sample = 500
-adjust = 200_000
+sample = 250
+adjust = 100_000
 
 [gpu-usage]
 fix-metrics = true
@@ -13,6 +13,13 @@ set-method = "smu"  # "smu" or "kernel"
 
 [dbus]
 enabled = true
+
+
+# Optional: set initial frequency range limits
+# Both min and max can be omitted or set to 0 for no limit
+[frequency-range]
+min = 1000    # MHz
+max = 1850   # MHz
 
 # MHz/ms
 [timing.ramp-rates]
@@ -30,13 +37,17 @@ adjust = 10
 
 # %
 [load-target]
-upper = 0.80
-lower = 0.65
+upper = 0.65
+lower = 0.50
 
 #°C
 [temperature]
 throttling = 85
 throttling_recovery = 75
+
+[[safe-points]]
+frequency = 500
+voltage = 700
 
 [[safe-points]]
 frequency = 1000
@@ -66,30 +77,41 @@ voltage = 930
 frequency = 2000
 voltage = 960
 
-[[safe-points]]
-frequency = 2050
-voltage = 980
+# [[safe-points]]
+# frequency = 2050
+# voltage = 980
+#
+# [[safe-points]]
+# frequency = 2100
+# voltage = 1000
+#
+# [[safe-points]]
+# frequency = 2125
+# voltage = 1020
+#
+# [[safe-points]]
+# frequency = 2150
+# voltage = 1035
+#
+# [[safe-points]]
+# frequency = 2200
+# voltage = 1050
+#
+# [[safe-points]]
+# frequency = 2230
+# voltage = 1085
+#
+# [[safe-points]]
+# frequency = 2300
+# voltage = 1110
+#
+# [[safe-points]]
+# frequency = 2350
+# voltage = 1130
+#
+# [[safe-points]]
+# frequency = 2400
+# voltage = 1150
 
-[[safe-points]]
-frequency = 2100
-voltage = 1000
-
-[[safe-points]]
-frequency = 2125
-voltage = 1020
-
-[[safe-points]]
-frequency = 2150
-voltage = 1035
-
-[[safe-points]]
-frequency = 2200
-voltage = 1050
-
-# Optional: set initial frequency range limits
-# Both min and max can be omitted or set to 0 for no limit
-# [frequency-range]
-# min = 1000    # MHz
-# max = 2200   # MHz
 
 
