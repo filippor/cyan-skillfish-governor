@@ -251,10 +251,14 @@ impl Governor {
         }
 
         if !(1..=110).contains(&throttling) {
-            return Err("temperature throttling must be between 1 and 110 Celsius, or 0 to clear".into());
+            return Err(
+                "temperature throttling must be between 1 and 110 Celsius, or 0 to clear".into(),
+            );
         }
         if recovery == 0 || recovery >= throttling {
-            return Err("temperature recovery must be greater than 0 and lower than throttling".into());
+            return Err(
+                "temperature recovery must be greater than 0 and lower than throttling".into(),
+            );
         }
 
         self.params.temperature = TemperatureConfig {

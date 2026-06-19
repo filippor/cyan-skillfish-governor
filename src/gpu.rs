@@ -5,10 +5,7 @@ use libdrm_amdgpu_sys::{AMDGPU::DeviceHandle, PCI::BUS_INFO};
 use log::debug;
 use log::info;
 
-use std::{
-    collections::BTreeMap, fs::File, io::Error as IoError, path::PathBuf,
-    time::Duration,
-};
+use std::{collections::BTreeMap, fs::File, io::Error as IoError, path::PathBuf, time::Duration};
 
 #[path = "gpu/kernel_freq_strategy.rs"]
 mod kernel_freq_strategy;
