@@ -38,6 +38,25 @@ has_cmd() {
     command -v "$1" >/dev/null 2>&1
 }
 
+has_service_owner() {
+    if has_cmd busctl; then
+        busctl --system call org.freedesktop.DBus /org/freedesktop/DBus org.freedesktop.DBus NameHasOwner s "$SERVICE_NAME" 2>/dev/null | awk 'NR == 1 { print $2 }' | grep -qx true
+        return $?
+    fi
+
+    if has_cmd dbus-send; then
+        dbus-send --system \
+            --print-reply \
+            --dest=org.freedesktop.DBus \
+            /org/freedesktop/DBus \
+            org.freedesktop.DBus.NameHasOwner \
+            string:"$SERVICE_NAME" 2>/dev/null | awk '/boolean/ { print $2; exit }' | grep -qx true
+        return $?
+    fi
+
+    return 1
+}
+
 call_set_enabled() {
     local value="$1"
 
@@ -405,6 +424,11 @@ case "$1" in
             echo "Performance mode disabled"
             exit 0
         else
+            if ! has_service_owner; then
+                echo "Performance mode already off (service is not running)"
+                exit 0
+            fi
+
             echo "Error: failed to disable performance mode. Is the service running?" >&2
             echo "Try: sudo systemctl status cyan-skillfish-governor-smu" >&2
             exit 1
