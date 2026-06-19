@@ -148,6 +148,23 @@ For a manual run test with an explicit config file:
 ```
 </details>
 
+## Building Debian package
+
+```bash
+cargo install cargo-deb
+```
+
+From the root directory of the cloned respository:
+```bash
+cargo deb
+```
+
+This produces a .deb package in `target/debian/cyan-skillfish-governor-smu_<version>_amd64.deb`
+
+Install the package:
+```bash
+sudo dpkg -i target/debian/cyan-skillfish-governor-smu_<version>_amd64.deb
+```
 
 ## General recommendation:
 
