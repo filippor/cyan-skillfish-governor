@@ -85,6 +85,9 @@ fn main() -> Result<()> {
                     PerformanceModeCommand::SetRange(min, max) => {
                         governor.apply_range_command(min, max)
                     }
+                    PerformanceModeCommand::SetTestMode(frequency, voltage) => {
+                        governor.apply_test_mode_command(frequency, voltage)?
+                    }
                 },
                 Err(TryRecvError::Empty) => {}
                 Err(err) => error!("D-Bus command receive failed: {err}"),
@@ -95,15 +98,7 @@ fn main() -> Result<()> {
     }
 
     info!("Shutting down gracefully...");
-    let (mut gpu, mut gpu_usage_fix) = governor.into_resources();
-    if let Some(fix) = gpu_usage_fix.as_mut()
-        && let Err(err) = fix.shutdown()
-    {
-        error!("GPU usage metrics fix cleanup failed: {err}");
-    }
-    if let Err(err) = gpu.shutdown() {
-        error!("System exit restore failed: {err}");
-    }
+    governor.shutdown()?;
     Ok(())
 }
 

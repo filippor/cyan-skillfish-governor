@@ -19,6 +19,7 @@ pub struct Governor {
     max_freq: u32,
     requested_range: RangeInclusive<u32>,
     performance_mode: bool,
+    test_mode: bool,
 }
 
 impl Governor {
@@ -43,6 +44,7 @@ impl Governor {
             max_freq,
             requested_range,
             performance_mode: false,
+            test_mode: false,
         })
     }
 
@@ -66,36 +68,37 @@ impl Governor {
         }
 
         let temp = self.update_max_freq_for_temperature()?;
-        let (next_target, next_status, should_apply_change) = compute_frequency_decision(
-            self.curr_freq,
-            self.target_freq,
-            self.status,
-            self.max_freq,
-            *self.requested_range.start(),
-            self.performance_mode,
-            average_load,
-            burst_length,
-            &self.params,
-        );
-        self.target_freq = next_target;
-        self.status = next_status;
-
-        if should_apply_change {
-            debug!(
-                "freq curr {} target {} temp {} load {:.2} status {}  burst_length {}, performance_mode {}",
+        if !self.test_mode {
+            let (next_target, next_status, should_apply_change) = compute_frequency_decision(
                 self.curr_freq,
                 self.target_freq,
-                temp,
-                average_load,
                 self.status,
+                self.max_freq,
+                *self.requested_range.start(),
+                self.performance_mode,
+                average_load,
                 burst_length,
-                self.performance_mode
+                &self.params,
             );
-            self.gpu.change_freq(self.target_freq)?;
-            self.status = 0;
-            self.curr_freq = self.target_freq;
-        }
+            self.target_freq = next_target;
+            self.status = next_status;
 
+            if should_apply_change {
+                debug!(
+                    "freq curr {} target {} temp {} load {:.2} status {}  burst_length {}, performance_mode {}",
+                    self.curr_freq,
+                    self.target_freq,
+                    temp,
+                    average_load,
+                    self.status,
+                    burst_length,
+                    self.performance_mode
+                );
+                self.gpu.change_freq(self.target_freq)?;
+                self.status = 0;
+                self.curr_freq = self.target_freq;
+            }
+        }
         let target_cycle_interval = if self.performance_mode {
             self.params
                 .adjustment_interval
@@ -104,6 +107,7 @@ impl Governor {
         } else {
             self.params.adjustment_interval
         };
+
         let elapsed = loop_start.elapsed();
         if elapsed < target_cycle_interval {
             std::thread::sleep(target_cycle_interval - elapsed);
@@ -115,6 +119,7 @@ impl Governor {
     pub fn apply_enable_command(&mut self) {
         info!("Performance mode enabled");
         self.performance_mode = true;
+        self.test_mode = false;
         self.requested_range = self.params.allowed_frequency_range.clone();
         info!(
             "Updated performance mode: {} range : {}..={}",
@@ -127,6 +132,7 @@ impl Governor {
     pub fn apply_disable_command(&mut self) {
         info!("Performance mode disabled: reverting to adaptive frequency control");
         self.performance_mode = false;
+        self.test_mode = false;
         self.requested_range = self.params.initial_frequency_range.clone();
         info!(
             "Updated performance mode: {} range : {}..={}",
@@ -142,6 +148,7 @@ impl Governor {
             frequency
         );
         self.performance_mode = true;
+        self.test_mode = false;
         self.requested_range = *self.params.initial_frequency_range.start()..=frequency;
         if self.max_freq > frequency {
             self.max_freq = frequency;
@@ -149,6 +156,7 @@ impl Governor {
     }
 
     pub fn apply_range_command(&mut self, min: u32, max: u32) {
+        self.test_mode = false;
         match (min, max) {
             (0, 0) => {
                 info!("Frequency range cleared: both limits removed");
@@ -208,8 +216,27 @@ impl Governor {
         }
     }
 
-    pub fn into_resources(self) -> (GPU, Option<GpuUsageFix>) {
-        (self.gpu, self.gpu_usage_fix)
+    pub fn apply_test_mode_command(&mut self, frequency: u32, voltage: u32) -> Result<()> {
+        self.gpu.change_freq_vol(frequency, voltage)?;
+        self.test_mode = true;
+        self.curr_freq = 0; // Force update when test disabled
+        info!(
+            "Test mode enabled with fixed frequency {} MHz and voltage {} mV",
+            frequency, voltage
+        );
+        Ok(())
+    }
+
+    pub fn shutdown(&mut self) -> Result<()> {
+        if let Some(fix) = self.gpu_usage_fix.as_mut()
+            && let Err(err) = fix.shutdown()
+        {
+            error!("GPU usage metrics fix cleanup failed: {err}");
+        }
+        if let Err(err) = self.gpu.shutdown() {
+            error!("System exit restore failed: {err}");
+        }
+        Ok(())
     }
 
     fn update_max_freq_for_temperature(&mut self) -> Result<u32> {
