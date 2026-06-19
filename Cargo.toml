@@ -6,13 +6,13 @@ edition = "2024"
 build = "build.rs"
 
 [dependencies]
-libdrm_amdgpu_sys = "=0.8"
-toml = "=1.1"
-nix = { version="=0.31",features = ["fs"] }
-thiserror = "=2.0"
-signal-hook = {version="=0.4",  features = ["iterator"] }
-clap = { version="=4.6", features = ["derive"] }
-clap-verbosity-flag = "=3.0"
-env_logger = "=0.11"
-log = "=0.4"
-zbus = {version="=5.16",  features = ["blocking"] }
+libdrm_amdgpu_sys = "0.8"
+toml = "1"
+nix = { version = "0.31", features = ["fs"] }
+thiserror = "2"
+signal-hook = { version = "0.4", features = ["iterator"] }
+clap = { version = "4", features = ["derive"] }
+clap-verbosity-flag = ">=2, <4"
+env_logger = "0.11"
+log = "0.4"
+zbus = { version = "5", features = ["blocking"] }
