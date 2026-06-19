@@ -69,23 +69,56 @@ struct TestModeIface {
     tx: Sender<PerformanceModeCommand>,
 }
 
+fn dispatch_command(tx: &Sender<PerformanceModeCommand>, command: PerformanceModeCommand) {
+    if let Err(err) = tx.send(command) {
+        error!("failed to notify governor main loop from D-Bus handler: {err}");
+    }
+}
+
 impl PerformanceModeIface {
     fn send_command(&self, command: PerformanceModeCommand) {
-        if let Err(err) = self.tx.send(command) {
-            error!("failed to notify governor main loop from D-Bus handler: {err}");
+        dispatch_command(&self.tx, command);
+    }
+
+    fn with_state<R>(&self, f: impl FnOnce(&PerformanceModeState) -> R) -> R {
+        let state = self.state.lock().expect("D-Bus state lock poisoned");
+        f(&state)
+    }
+
+    fn with_state_mut_infallible<R>(&self, f: impl FnOnce(&mut PerformanceModeState) -> R) -> R {
+        let mut state = self.state.lock().expect("D-Bus state lock poisoned");
+        f(&mut state)
+    }
+
+    fn with_state_mut<R>(&self, f: impl FnOnce(&mut PerformanceModeState) -> R) -> fdo::Result<R> {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| fdo::Error::Failed("failed to lock D-Bus state".into()))?;
+        Ok(f(&mut state))
+    }
+
+    fn validate_range_bound(&self, label: &str, value: u32) -> fdo::Result<()> {
+        if value != 0 && !(self.allowed_min..=self.allowed_max).contains(&value) {
+            return Err(fdo::Error::InvalidArgs(format!(
+                "{} {} out of allowed range {}..={} MHz",
+                label, value, self.allowed_min, self.allowed_max
+            )));
         }
+        Ok(())
     }
 
     fn send_mode_update(&self, enabled: bool) {
         self.enabled.store(enabled, Ordering::Relaxed);
-        let mut state = self.state.lock().expect("D-Bus state lock poisoned");
-        if enabled {
-            state.current_range_min = state.allowed_range_min;
-            state.current_range_max = state.allowed_range_max;
-        } else {
-            state.current_range_min = state.initial_range_min;
-            state.current_range_max = state.initial_range_max;
-        }
+        self.with_state_mut_infallible(|state| {
+            if enabled {
+                state.current_range_min = state.allowed_range_min;
+                state.current_range_max = state.allowed_range_max;
+            } else {
+                state.current_range_min = state.initial_range_min;
+                state.current_range_max = state.initial_range_max;
+            }
+        });
         let command = if enabled {
             PerformanceModeCommand::Enable
         } else {
@@ -97,9 +130,10 @@ impl PerformanceModeIface {
 
     fn send_fixed_frequency_update(&self, frequency: u32) {
         self.enabled.store(true, Ordering::Relaxed);
-        let mut state = self.state.lock().expect("D-Bus state lock poisoned");
-        state.current_range_min = state.initial_range_min;
-        state.current_range_max = frequency;
+        self.with_state_mut_infallible(|state| {
+            state.current_range_min = state.initial_range_min;
+            state.current_range_max = frequency;
+        });
         self.send_command(PerformanceModeCommand::SetFixedFrequency(frequency));
     }
 
@@ -115,9 +149,10 @@ impl PerformanceModeIface {
     }
 
     fn update_current_range(&self, min: u32, max: u32) {
-        let mut state = self.state.lock().expect("D-Bus state lock poisoned");
-        state.current_range_min = min;
-        state.current_range_max = max;
+        self.with_state_mut_infallible(|state| {
+            state.current_range_min = min;
+            state.current_range_max = max;
+        });
     }
 
     fn apply_load_target(&self, min: f64, max: f64) -> fdo::Result<()> {
@@ -138,12 +173,10 @@ impl PerformanceModeIface {
         }
 
         {
-            let mut state = self
-                .state
-                .lock()
-                .map_err(|_| fdo::Error::Failed("failed to lock D-Bus state".into()))?;
-            state.load_target_min = min;
-            state.load_target_max = max;
+            self.with_state_mut(|state| {
+                state.load_target_min = min;
+                state.load_target_max = max;
+            })?;
         }
 
         self.send_load_target_update(min, max);
@@ -181,14 +214,10 @@ impl PerformanceModeIface {
             }
         };
 
-        {
-            let mut state = self
-                .state
-                .lock()
-                .map_err(|_| fdo::Error::Failed("failed to lock D-Bus state".into()))?;
+        self.with_state_mut(|state| {
             state.throttling_temp = next_throttling;
             state.throttling_recovery_temp = next_recovery;
-        }
+        })?;
 
         self.send_temperature_thresholds_update(
             next_throttling.unwrap_or(0),
@@ -200,9 +229,7 @@ impl PerformanceModeIface {
 
 impl TestModeIface {
     fn send_command(&self, command: PerformanceModeCommand) {
-        if let Err(err) = self.tx.send(command) {
-            error!("failed to notify governor main loop from D-Bus handler: {err}");
-        }
+        dispatch_command(&self.tx, command);
     }
 
     fn send_test_mode_update(&self, frequency: u32, voltage: u32) {
@@ -219,18 +246,9 @@ impl PerformanceModeIface {
 
     #[zbus(property)]
     fn set_current_range_min(&self, value: u32) -> fdo::Result<()> {
-        if value != 0 && !(self.allowed_min..=self.allowed_max).contains(&value) {
-            return Err(fdo::Error::InvalidArgs(format!(
-                "min {} out of allowed range {}..={} MHz",
-                value, self.allowed_min, self.allowed_max
-            )));
-        }
+        self.validate_range_bound("min", value)?;
 
-        let current_max = self
-            .state
-            .lock()
-            .map_err(|_| fdo::Error::Failed("failed to lock D-Bus state".into()))?
-            .current_range_max;
+        let current_max = self.with_state(|state| state.current_range_max);
 
         if current_max != 0 && value > current_max {
             return Err(fdo::Error::InvalidArgs(format!(
@@ -246,53 +264,36 @@ impl PerformanceModeIface {
 
     #[zbus(property)]
     fn set_load_target_min(&self, value: f64) -> fdo::Result<()> {
-        let current_max = self
-            .state
-            .lock()
-            .map_err(|_| fdo::Error::Failed("failed to lock D-Bus state".into()))?
-            .load_target_max;
+        let current_max = self.with_state(|state| state.load_target_max);
         self.apply_load_target(value, current_max)
     }
 
     #[zbus(property)]
     fn load_target_min(&self) -> f64 {
-        self.state.lock().expect("D-Bus state lock poisoned").load_target_min
+        self.with_state(|state| state.load_target_min)
     }
 
     #[zbus(property)]
     fn set_load_target_max(&self, value: f64) -> fdo::Result<()> {
-        let current_min = self
-            .state
-            .lock()
-            .map_err(|_| fdo::Error::Failed("failed to lock D-Bus state".into()))?
-            .load_target_min;
+        let current_min = self.with_state(|state| state.load_target_min);
         self.apply_load_target(current_min, value)
     }
 
     #[zbus(property)]
     fn load_target_max(&self) -> f64 {
-        self.state.lock().expect("D-Bus state lock poisoned").load_target_max
+        self.with_state(|state| state.load_target_max)
     }
 
     #[zbus(property)]
     fn current_range_min(&self) -> u32 {
-        self.state.lock().expect("D-Bus state lock poisoned").current_range_min
+        self.with_state(|state| state.current_range_min)
     }
 
     #[zbus(property)]
     fn set_current_range_max(&self, value: u32) -> fdo::Result<()> {
-        if value != 0 && !(self.allowed_min..=self.allowed_max).contains(&value) {
-            return Err(fdo::Error::InvalidArgs(format!(
-                "max {} out of allowed range {}..={} MHz",
-                value, self.allowed_min, self.allowed_max
-            )));
-        }
+        self.validate_range_bound("max", value)?;
 
-        let current_min = self
-            .state
-            .lock()
-            .map_err(|_| fdo::Error::Failed("failed to lock D-Bus state".into()))?
-            .current_range_min;
+        let current_min = self.with_state(|state| state.current_range_min);
 
         if current_min != 0 && value != 0 && current_min > value {
             return Err(fdo::Error::InvalidArgs(format!(
@@ -308,36 +309,32 @@ impl PerformanceModeIface {
 
     #[zbus(property)]
     fn current_range_max(&self) -> u32 {
-        self.state.lock().expect("D-Bus state lock poisoned").current_range_max
+        self.with_state(|state| state.current_range_max)
     }
 
     #[zbus(property)]
     fn allowed_range_min(&self) -> u32 {
-        self.state.lock().expect("D-Bus state lock poisoned").allowed_range_min
+        self.with_state(|state| state.allowed_range_min)
     }
 
     #[zbus(property)]
     fn allowed_range_max(&self) -> u32 {
-        self.state.lock().expect("D-Bus state lock poisoned").allowed_range_max
+        self.with_state(|state| state.allowed_range_max)
     }
 
     #[zbus(property)]
     fn initial_range_min(&self) -> u32 {
-        self.state.lock().expect("D-Bus state lock poisoned").initial_range_min
+        self.with_state(|state| state.initial_range_min)
     }
 
     #[zbus(property)]
     fn initial_range_max(&self) -> u32 {
-        self.state.lock().expect("D-Bus state lock poisoned").initial_range_max
+        self.with_state(|state| state.initial_range_max)
     }
 
     #[zbus(property)]
     fn set_temperature_throttling(&self, value: u32) -> fdo::Result<()> {
-        let current_recovery = self
-            .state
-            .lock()
-            .map_err(|_| fdo::Error::Failed("failed to lock D-Bus state".into()))?
-            .throttling_recovery_temp;
+        let current_recovery = self.with_state(|state| state.throttling_recovery_temp);
 
         if value == 0 {
             return self.apply_temperature_thresholds(None, None);
@@ -348,20 +345,12 @@ impl PerformanceModeIface {
 
     #[zbus(property)]
     fn temperature_throttling(&self) -> u32 {
-        self.state
-            .lock()
-            .expect("D-Bus state lock poisoned")
-            .throttling_temp
-            .unwrap_or(0)
+        self.with_state(|state| state.throttling_temp.unwrap_or(0))
     }
 
     #[zbus(property)]
     fn set_temperature_recovery(&self, value: u32) -> fdo::Result<()> {
-        let current_throttling = self
-            .state
-            .lock()
-            .map_err(|_| fdo::Error::Failed("failed to lock D-Bus state".into()))?
-            .throttling_temp;
+        let current_throttling = self.with_state(|state| state.throttling_temp);
 
         if value == 0 {
             return self.apply_temperature_thresholds(None, None);
@@ -372,11 +361,7 @@ impl PerformanceModeIface {
 
     #[zbus(property)]
     fn temperature_recovery(&self) -> u32 {
-        self.state
-            .lock()
-            .expect("D-Bus state lock poisoned")
-            .throttling_recovery_temp
-            .unwrap_or(0)
+        self.with_state(|state| state.throttling_recovery_temp.unwrap_or(0))
     }
 
     #[zbus(property)]
@@ -401,32 +386,42 @@ impl TestModeIface {
 /// D-Bus service handler
 pub struct DbusService;
 
+pub struct DbusServiceHandle {
+    pub command_rx: Receiver<PerformanceModeCommand>,
+    pub enabled_state: Arc<AtomicBool>,
+}
+
 impl DbusService {
     /// Start the D-Bus service in a background thread
     /// Returns a receiver for performance mode commands
-    pub fn start(params: &GovernorParams) -> Result<Receiver<PerformanceModeCommand>> {
+    pub fn start(params: &GovernorParams) -> Result<DbusServiceHandle> {
         let (tx, rx) = mpsc::channel();
         let allowed_min = *params.allowed_frequency_range.start();
         let allowed_max = *params.allowed_frequency_range.end();
         let state = Arc::new(Mutex::new(PerformanceModeState::from_params(params)));
+        let enabled = Arc::new(AtomicBool::new(false));
+        let enabled_state = Arc::clone(&enabled);
 
         std::thread::spawn(move || {
-            if let Err(e) = Self::run_service(tx, state, allowed_min, allowed_max) {
+            if let Err(e) = Self::run_service(tx, enabled, state, allowed_min, allowed_max) {
                 error!("D-Bus service error: {}", e);
             }
         });
 
         info!("D-Bus service thread started");
-        Ok(rx)
+        Ok(DbusServiceHandle {
+            command_rx: rx,
+            enabled_state,
+        })
     }
 
     fn run_service(
         tx: Sender<PerformanceModeCommand>,
+        enabled: Arc<AtomicBool>,
         state: Arc<Mutex<PerformanceModeState>>,
         allowed_min: u32,
         allowed_max: u32,
     ) -> Result<()> {
-        let enabled = Arc::new(AtomicBool::new(false));
         let perf_iface = PerformanceModeIface {
             enabled: enabled.clone(),
             state: state.clone(),

@@ -12,7 +12,8 @@ use dbus::PerformanceModeCommand;
 use governor::Governor;
 use gpu::GPU;
 use gpu_usage_fix::GpuUsageFix;
-use log::{error, info};
+use log::{info, warn};
+use std::sync::atomic::Ordering;
 use signal_hook::consts::signal::*;
 use signal_hook::iterator::Signals;
 use std::sync::mpsc::{self, Sender, TryRecvError};
@@ -50,12 +51,13 @@ fn main() -> Result<()> {
     )?;
     let params: GovernorParams = config.to_governor_params(&gpu);
 
-    let dbus_rx = if config.dbus.enabled {
+    let (mut dbus_rx, mut dbus_enabled_state) = if config.dbus.enabled {
         info!("D-Bus service listening enabled");
-        Some(dbus::DbusService::start(&params)?)
+        let handle = dbus::DbusService::start(&params)?;
+        (Some(handle.command_rx), Some(handle.enabled_state))
     } else {
         info!("D-Bus service listening disabled in configuration");
-        None
+        (None, None)
     };
 
     let gpu_usage_fix = if config.gpu_usage.fix_metrics {
@@ -72,6 +74,8 @@ fn main() -> Result<()> {
             Ok(()) | Err(TryRecvError::Disconnected) => break,
             Err(TryRecvError::Empty) => {}
         }
+
+        let mut dbus_channel_closed = false;
 
         if let Some(rx) = dbus_rx.as_ref() {
             match rx.try_recv() {
@@ -95,8 +99,18 @@ fn main() -> Result<()> {
                     }
                 },
                 Err(TryRecvError::Empty) => {}
-                Err(err) => error!("D-Bus command receive failed: {err}"),
+                Err(TryRecvError::Disconnected) => dbus_channel_closed = true,
             }
+
+            if let Some(enabled_state) = dbus_enabled_state.as_ref() {
+                enabled_state.store(governor.performance_mode_enabled(), Ordering::Relaxed);
+            }
+        }
+
+        if dbus_channel_closed {
+            warn!("D-Bus command channel closed; disabling D-Bus command handling");
+            dbus_rx = None;
+            dbus_enabled_state = None;
         }
 
         governor.run_iteration()?;

@@ -294,6 +294,10 @@ impl Governor {
         Ok(())
     }
 
+    pub fn performance_mode_enabled(&self) -> bool {
+        self.performance_mode
+    }
+
     fn update_max_freq_for_temperature(&mut self) -> Result<u32> {
         let temp = self.gpu.read_temperature()?;
         if let Some(max_temp) = self.params.temperature.throttling_temp {
