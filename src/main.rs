@@ -13,9 +13,9 @@ use governor::Governor;
 use gpu::GPU;
 use gpu_usage_fix::GpuUsageFix;
 use log::{info, warn};
-use std::sync::atomic::Ordering;
 use signal_hook::consts::signal::*;
 use signal_hook::iterator::Signals;
+use std::sync::atomic::Ordering;
 use std::sync::mpsc::{self, Sender, TryRecvError};
 
 const BUILD_VERSION: &str = env!("GIT_VERSION");

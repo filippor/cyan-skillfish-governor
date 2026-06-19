@@ -2,9 +2,9 @@ use crate::app_error::Result;
 use crate::config::GovernorParams;
 use log::{error, info};
 use std::sync::Arc;
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
-use std::sync::Mutex;
 use zbus::blocking::connection::Builder as ConnectionBuilder;
 use zbus::fdo;
 
@@ -76,6 +76,10 @@ fn dispatch_command(tx: &Sender<PerformanceModeCommand>, command: PerformanceMod
 }
 
 impl PerformanceModeIface {
+    fn fdo_to_zbus<T>(result: fdo::Result<T>) -> zbus::Result<T> {
+        result.map_err(|err| zbus::Error::FDO(Box::new(err)))
+    }
+
     fn send_command(&self, command: PerformanceModeCommand) {
         dispatch_command(&self.tx, command);
     }
@@ -143,8 +147,7 @@ impl PerformanceModeIface {
 
     fn send_temperature_thresholds_update(&self, throttling: u32, recovery: u32) {
         self.send_command(PerformanceModeCommand::SetTemperatureThresholds(
-            throttling,
-            recovery,
+            throttling, recovery,
         ));
     }
 
@@ -245,16 +248,15 @@ impl PerformanceModeIface {
     }
 
     #[zbus(property)]
-    fn set_current_range_min(&self, value: u32) -> fdo::Result<()> {
-        self.validate_range_bound("min", value)?;
+    fn set_current_range_min(&self, value: u32) -> zbus::Result<()> {
+        Self::fdo_to_zbus(self.validate_range_bound("min", value))?;
 
         let current_max = self.with_state(|state| state.current_range_max);
 
         if current_max != 0 && value > current_max {
-            return Err(fdo::Error::InvalidArgs(format!(
-                "Invalid range: min {} > max {}",
-                value, current_max
-            )));
+            return Err(zbus::Error::FDO(Box::new(fdo::Error::InvalidArgs(
+                format!("Invalid range: min {} > max {}", value, current_max),
+            ))));
         }
 
         self.update_current_range(value, current_max);
@@ -263,9 +265,9 @@ impl PerformanceModeIface {
     }
 
     #[zbus(property)]
-    fn set_load_target_min(&self, value: f64) -> fdo::Result<()> {
+    fn set_load_target_min(&self, value: f64) -> zbus::Result<()> {
         let current_max = self.with_state(|state| state.load_target_max);
-        self.apply_load_target(value, current_max)
+        Self::fdo_to_zbus(self.apply_load_target(value, current_max))
     }
 
     #[zbus(property)]
@@ -274,9 +276,9 @@ impl PerformanceModeIface {
     }
 
     #[zbus(property)]
-    fn set_load_target_max(&self, value: f64) -> fdo::Result<()> {
+    fn set_load_target_max(&self, value: f64) -> zbus::Result<()> {
         let current_min = self.with_state(|state| state.load_target_min);
-        self.apply_load_target(current_min, value)
+        Self::fdo_to_zbus(self.apply_load_target(current_min, value))
     }
 
     #[zbus(property)]
@@ -290,16 +292,15 @@ impl PerformanceModeIface {
     }
 
     #[zbus(property)]
-    fn set_current_range_max(&self, value: u32) -> fdo::Result<()> {
-        self.validate_range_bound("max", value)?;
+    fn set_current_range_max(&self, value: u32) -> zbus::Result<()> {
+        Self::fdo_to_zbus(self.validate_range_bound("max", value))?;
 
         let current_min = self.with_state(|state| state.current_range_min);
 
         if current_min != 0 && value != 0 && current_min > value {
-            return Err(fdo::Error::InvalidArgs(format!(
-                "Invalid range: min {} > max {}",
-                current_min, value
-            )));
+            return Err(zbus::Error::FDO(Box::new(fdo::Error::InvalidArgs(
+                format!("Invalid range: min {} > max {}", current_min, value),
+            ))));
         }
 
         self.update_current_range(current_min, value);
@@ -333,14 +334,14 @@ impl PerformanceModeIface {
     }
 
     #[zbus(property)]
-    fn set_temperature_throttling(&self, value: u32) -> fdo::Result<()> {
+    fn set_temperature_throttling(&self, value: u32) -> zbus::Result<()> {
         let current_recovery = self.with_state(|state| state.throttling_recovery_temp);
 
         if value == 0 {
-            return self.apply_temperature_thresholds(None, None);
+            return Self::fdo_to_zbus(self.apply_temperature_thresholds(None, None));
         }
 
-        self.apply_temperature_thresholds(Some(value), current_recovery)
+        Self::fdo_to_zbus(self.apply_temperature_thresholds(Some(value), current_recovery))
     }
 
     #[zbus(property)]
@@ -349,14 +350,14 @@ impl PerformanceModeIface {
     }
 
     #[zbus(property)]
-    fn set_temperature_recovery(&self, value: u32) -> fdo::Result<()> {
+    fn set_temperature_recovery(&self, value: u32) -> zbus::Result<()> {
         let current_throttling = self.with_state(|state| state.throttling_temp);
 
         if value == 0 {
-            return self.apply_temperature_thresholds(None, None);
+            return Self::fdo_to_zbus(self.apply_temperature_thresholds(None, None));
         }
 
-        self.apply_temperature_thresholds(current_throttling, Some(value))
+        Self::fdo_to_zbus(self.apply_temperature_thresholds(current_throttling, Some(value)))
     }
 
     #[zbus(property)]
@@ -373,7 +374,6 @@ impl PerformanceModeIface {
     fn set_enabled(&self, value: bool) {
         self.send_mode_update(value);
     }
-
 }
 
 #[zbus::interface(name = "com.cyanskillfish.Governor.TestMode")]
@@ -429,10 +429,7 @@ impl DbusService {
             allowed_min,
             allowed_max,
         };
-        let test_iface = TestModeIface {
-            enabled,
-            tx,
-        };
+        let test_iface = TestModeIface { enabled, tx };
 
         let _connection = ConnectionBuilder::system()
             .map_err(|err| format!("failed to create D-Bus system connection: {err}"))?
