@@ -5,7 +5,7 @@ use libdrm_amdgpu_sys::{AMDGPU::DeviceHandle, PCI::BUS_INFO};
 use log::info;
 
 use std::{
-    collections::BTreeMap, fs::File, io::Error as IoError, os::fd::AsRawFd, path::PathBuf,
+    collections::BTreeMap, fs::File, io::Error as IoError, path::PathBuf,
     time::Duration,
 };
 
@@ -149,8 +149,8 @@ fn validate_device_identity(location: &BUS_INFO) -> Result<()> {
 
 fn init_device_handle(render_path: PathBuf) -> Result<DeviceHandle> {
     let card = File::open(render_path)?;
-    let (dev_handle, _, _) = DeviceHandle::init(card.as_raw_fd())
-        .map_err(|e| IoError::other(format!("DeviceHandle::init failed: {e}")))?;
+    let (dev_handle, _, _) = DeviceHandle::init_with_fd(&card)
+        .map_err(|e| IoError::other(format!("DeviceHandle::init_with_fd failed: {e}")))?;
     Ok(dev_handle)
 }
 struct SmuFreqStrategy {

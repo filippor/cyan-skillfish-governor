@@ -4,7 +4,7 @@ use std::ops::RangeInclusive;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
-use zbus::blocking::ConnectionBuilder;
+use zbus::blocking::connection::Builder as ConnectionBuilder;
 use zbus::fdo;
 
 /// Commands sent from D-Bus to the main loop
