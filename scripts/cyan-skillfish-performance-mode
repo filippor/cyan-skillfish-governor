@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-SERVICE_NAME="com.cyan.SkillFishGovernor"
-OBJECT_PATH="/com/cyan/SkillFishGovernor"
-INTERFACE="com.cyan.SkillFishGovernor.PerformanceMode"
+SERVICE_NAME="com.cyanskillfish.Governor"
+OBJECT_PATH="/com/cyanskillfish/Governor"
+INTERFACE="com.cyanskillfish.Governor.PerformanceMode"
 
 usage() {
     cat <<'EOF'
@@ -13,7 +13,11 @@ Options:
     --on                  Enable performance mode
     --fixed-frequency <MHz>
                           Enable performance mode with fixed frequency
-    --range <min> <max>   Set frequency range (MHz, use 0 for no limit)
+    --range <min> <max>   Set current range properties (MHz, use 0 for no limit)
+    --load-target <min> <max>
+                          Set load target bounds as writable properties
+    --temperature <throttling> <recovery>
+                          Set temperature thresholds as writable properties
     --off                 Disable performance mode
     --status              Show performance mode status
     -h, --help            Show this help message
@@ -34,9 +38,11 @@ has_cmd() {
     command -v "$1" >/dev/null 2>&1
 }
 
-call_enable() {
+call_set_enabled() {
+    local value="$1"
+
     if has_cmd busctl; then
-        busctl --system call "$SERVICE_NAME" "$OBJECT_PATH" "$INTERFACE" Enable >/dev/null 2>&1
+        busctl --system set-property "$SERVICE_NAME" "$OBJECT_PATH" "$INTERFACE" Enabled b "$value" >/dev/null 2>&1
         return $?
     fi
 
@@ -44,25 +50,10 @@ call_enable() {
         dbus-send --system \
             --dest="$SERVICE_NAME" \
             "$OBJECT_PATH" \
-            "$INTERFACE.Enable" >/dev/null 2>&1
-        return $?
-    fi
-
-    echo "Error: neither busctl nor dbus-send is installed." >&2
-    return 1
-}
-
-call_disable() {
-    if has_cmd busctl; then
-        busctl --system call "$SERVICE_NAME" "$OBJECT_PATH" "$INTERFACE" Disable >/dev/null 2>&1
-        return $?
-    fi
-
-    if has_cmd dbus-send; then
-        dbus-send --system \
-            --dest="$SERVICE_NAME" \
-            "$OBJECT_PATH" \
-            "$INTERFACE.Disable" >/dev/null 2>&1
+            org.freedesktop.DBus.Properties.Set \
+            string:"$INTERFACE" \
+            string:"Enabled" \
+            variant:boolean:"$value" >/dev/null 2>&1
         return $?
     fi
 
@@ -94,34 +85,129 @@ call_set_fixed_frequency() {
 call_set_range() {
     local min="$1"
     local max="$2"
-    local error_output
+    local current_min
+    local current_max
+
+    current_min=$(call_get_property CurrentRangeMin)
+    current_max=$(call_get_property CurrentRangeMax)
+
+    if awk -v desired="$max" -v current="$current_max" 'BEGIN { exit !(desired >= current) }'; then
+        call_set_property_u32 CurrentRangeMax "$max" || return 1
+        call_set_property_u32 CurrentRangeMin "$min" || return 1
+    else
+        call_set_property_u32 CurrentRangeMin "$min" || return 1
+        call_set_property_u32 CurrentRangeMax "$max" || return 1
+    fi
+}
+
+call_get_property() {
+    local property_name="$1"
 
     if has_cmd busctl; then
-        error_output=$(busctl --system call "$SERVICE_NAME" "$OBJECT_PATH" "$INTERFACE" SetRange uu "$min" "$max" 2>&1)
-        if [ $? -eq 0 ]; then
-            return 0
-        else
-            echo "$error_output" >&2
-            return 1
-        fi
+        busctl --system get-property "$SERVICE_NAME" "$OBJECT_PATH" "$INTERFACE" "$property_name" | awk 'NR == 1 { print $NF }'
+        return $?
     fi
 
     if has_cmd dbus-send; then
-        error_output=$(dbus-send --system \
+        dbus-send --system \
+            --print-reply \
             --dest="$SERVICE_NAME" \
             "$OBJECT_PATH" \
-            "$INTERFACE.SetRange" \
-            uint32:"$min" uint32:"$max" 2>&1)
-        if [ $? -eq 0 ]; then
-            return 0
-        else
-            echo "$error_output" >&2
-            return 1
-        fi
+            org.freedesktop.DBus.Properties.Get \
+            string:"$INTERFACE" \
+            string:"$property_name" | awk '/variant/ { print $3; exit }'
+        return $?
     fi
 
     echo "Error: neither busctl nor dbus-send is installed." >&2
     return 1
+}
+
+call_set_property_u32() {
+    local property_name="$1"
+    local value="$2"
+
+    if has_cmd busctl; then
+        busctl --system set-property "$SERVICE_NAME" "$OBJECT_PATH" "$INTERFACE" "$property_name" u "$value" >/dev/null 2>&1
+        return $?
+    fi
+
+    if has_cmd dbus-send; then
+        dbus-send --system \
+            --dest="$SERVICE_NAME" \
+            "$OBJECT_PATH" \
+            org.freedesktop.DBus.Properties.Set \
+            string:"$INTERFACE" \
+            string:"$property_name" \
+            variant:uint32:"$value" >/dev/null 2>&1
+        return $?
+    fi
+
+    echo "Error: neither busctl nor dbus-send is installed." >&2
+    return 1
+}
+
+call_set_property_double() {
+    local property_name="$1"
+    local value="$2"
+
+    if has_cmd busctl; then
+        busctl --system set-property "$SERVICE_NAME" "$OBJECT_PATH" "$INTERFACE" "$property_name" d "$value" >/dev/null 2>&1
+        return $?
+    fi
+
+    if has_cmd dbus-send; then
+        dbus-send --system \
+            --dest="$SERVICE_NAME" \
+            "$OBJECT_PATH" \
+            org.freedesktop.DBus.Properties.Set \
+            string:"$INTERFACE" \
+            string:"$property_name" \
+            variant:double:"$value" >/dev/null 2>&1
+        return $?
+    fi
+
+    echo "Error: neither busctl nor dbus-send is installed." >&2
+    return 1
+}
+
+call_set_load_target() {
+    local min="$1"
+    local max="$2"
+    local current_min
+    local current_max
+
+    current_min=$(call_get_property LoadTargetMin)
+    current_max=$(call_get_property LoadTargetMax)
+
+    if awk -v desired="$max" -v current="$current_max" 'BEGIN { exit !(desired >= current) }'; then
+        call_set_property_double LoadTargetMax "$max" || return 1
+        call_set_property_double LoadTargetMin "$min" || return 1
+    else
+        call_set_property_double LoadTargetMin "$min" || return 1
+        call_set_property_double LoadTargetMax "$max" || return 1
+    fi
+}
+
+call_set_temperature() {
+    local throttling="$1"
+    local recovery="$2"
+    local current_throttling
+
+    current_throttling=$(call_get_property TemperatureThrottling)
+
+    if [ "$throttling" -eq 0 ] && [ "$recovery" -eq 0 ]; then
+        call_set_property_u32 TemperatureThrottling 0
+        return $?
+    fi
+
+    if awk -v desired="$throttling" -v current="$current_throttling" 'BEGIN { exit !(desired >= current) }'; then
+        call_set_property_u32 TemperatureThrottling "$throttling" || return 1
+        call_set_property_u32 TemperatureRecovery "$recovery" || return 1
+    else
+        call_set_property_u32 TemperatureRecovery "$recovery" || return 1
+        call_set_property_u32 TemperatureThrottling "$throttling" || return 1
+    fi
 }
 
 call_status() {
@@ -146,7 +232,7 @@ call_status() {
 }
 
 cleanup() {
-    call_disable || true
+    call_set_enabled false || true
 }
 
 # No arguments: show usage
@@ -158,7 +244,7 @@ fi
 # Handle explicit options
 case "$1" in
     --on)
-        if call_enable; then
+        if call_set_enabled true; then
             echo "Performance mode enabled"
             exit 0
         else
@@ -239,8 +325,83 @@ case "$1" in
             exit 1
         fi
         ;;
+    --load-target)
+        if [ "$#" -lt 3 ]; then
+            echo "Error: --load-target requires two numeric arguments (min max)." >&2
+            usage
+            exit 1
+        fi
+
+        if ! awk -v value="$2" 'BEGIN { exit !(value >= 0.0 && value <= 1.0) }' || \
+           ! awk -v value="$3" 'BEGIN { exit !(value >= 0.0 && value <= 1.0) }'; then
+            echo "Error: load target values must be between 0.0 and 1.0." >&2
+            exit 1
+        fi
+
+        if call_set_load_target "$2" "$3"; then
+            echo "Load target set: min=$2, max=$3"
+
+            if [ "$#" -gt 3 ]; then
+                shift 3
+                if [ "${1:-}" = "--" ]; then
+                    shift
+                fi
+
+                if [ "$#" -eq 0 ]; then
+                    echo "Error: no command provided after --load-target" >&2
+                    exit 1
+                fi
+
+                trap cleanup EXIT INT TERM
+                exec "$@"
+            fi
+
+            exit 0
+        else
+            echo "Error: failed to set load target. Is the service running?" >&2
+            echo "Try: sudo systemctl status cyan-skillfish-governor-smu" >&2
+            exit 1
+        fi
+        ;;
+    --temperature)
+        if [ "$#" -lt 3 ]; then
+            echo "Error: --temperature requires two numeric arguments (throttling recovery)." >&2
+            usage
+            exit 1
+        fi
+
+        if [[ ! "$2" =~ ^[0-9]+$ ]] || [[ ! "$3" =~ ^[0-9]+$ ]]; then
+            echo "Error: temperature values must be non-negative integers (Celsius)." >&2
+            exit 1
+        fi
+
+        if call_set_temperature "$2" "$3"; then
+            echo "Temperature thresholds set: throttling=$2 C, recovery=$3 C"
+
+            if [ "$#" -gt 3 ]; then
+                shift 3
+                if [ "${1:-}" = "--" ]; then
+                    shift
+                fi
+
+                if [ "$#" -eq 0 ]; then
+                    echo "Error: no command provided after --temperature" >&2
+                    exit 1
+                fi
+
+                trap cleanup EXIT INT TERM
+                exec "$@"
+            fi
+
+            exit 0
+        else
+            echo "Error: failed to set temperature thresholds. Is the service running?" >&2
+            echo "Try: sudo systemctl status cyan-skillfish-governor-smu" >&2
+            exit 1
+        fi
+        ;;
     --off)
-        if call_disable; then
+        if call_set_enabled false; then
             echo "Performance mode disabled"
             exit 0
         else
@@ -259,7 +420,7 @@ case "$1" in
         ;;
     *)
         # Treat as command wrapper mode: enable, run command, disable on exit
-        call_enable || {
+        call_set_enabled true || {
             echo "Warning: failed to enable performance mode." >&2
         }
         trap cleanup EXIT INT TERM

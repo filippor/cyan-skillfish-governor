@@ -48,11 +48,11 @@ fn main() -> Result<()> {
         config.gpu_usage.method,
         config.timing.sampling_interval,
     )?;
-    let allowed_frequency_range = gpu.min_freq..=gpu.max_freq;
+    let params: GovernorParams = config.to_governor_params(&gpu);
 
     let dbus_rx = if config.dbus.enabled {
         info!("D-Bus service listening enabled");
-        Some(dbus::DbusService::start(&allowed_frequency_range)?)
+        Some(dbus::DbusService::start(&params)?)
     } else {
         info!("D-Bus service listening disabled in configuration");
         None
@@ -65,7 +65,6 @@ fn main() -> Result<()> {
         None
     };
 
-    let params: GovernorParams = config.to_governor_params(&gpu);
     let mut governor = Governor::new(params, gpu, gpu_usage_fix)?;
 
     loop {
@@ -84,6 +83,12 @@ fn main() -> Result<()> {
                     }
                     PerformanceModeCommand::SetRange(min, max) => {
                         governor.apply_range_command(min, max)
+                    }
+                    PerformanceModeCommand::SetLoadTarget(min, max) => {
+                        governor.apply_load_target_command(min, max)?
+                    }
+                    PerformanceModeCommand::SetTemperatureThresholds(throttling, recovery) => {
+                        governor.apply_temperature_thresholds_command(throttling, recovery)?
                     }
                     PerformanceModeCommand::SetTestMode(frequency, voltage) => {
                         governor.apply_test_mode_command(frequency, voltage)?
