@@ -1,5 +1,5 @@
 use crate::app_error::Result;
-use crate::config::GovernorParams;
+use crate::config::{GovernorParams, TemperatureConfig};
 use crate::gpu::GPU;
 use crate::gpu_usage_fix::GpuUsageFix;
 use log::{debug, error, info};
@@ -214,6 +214,61 @@ impl Governor {
         if self.max_freq > *self.requested_range.end() {
             self.max_freq = *self.requested_range.end();
         }
+    }
+
+    pub fn apply_load_target_command(&mut self, min: f64, max: f64) -> Result<()> {
+        if !min.is_finite() || !max.is_finite() {
+            return Err("load target values must be finite numbers".into());
+        }
+        if !(0.0..=1.0).contains(&min) || !(0.0..=1.0).contains(&max) {
+            return Err("load target values must be between 0.0 and 1.0".into());
+        }
+        if min > max {
+            return Err("load target min cannot be greater than max".into());
+        }
+
+        self.params.down_thresh = min as f32;
+        self.params.up_thresh = max as f32;
+        info!(
+            "Load target updated at runtime: min={:.2}, max={:.2}",
+            min, max
+        );
+        Ok(())
+    }
+
+    pub fn apply_temperature_thresholds_command(
+        &mut self,
+        throttling: u32,
+        recovery: u32,
+    ) -> Result<()> {
+        if throttling == 0 && recovery == 0 {
+            self.params.temperature = TemperatureConfig {
+                throttling_temp: None,
+                throttling_recovery_temp: None,
+            };
+            info!("Temperature throttling thresholds cleared at runtime");
+            return Ok(());
+        }
+
+        if !(1..=110).contains(&throttling) {
+            return Err("temperature throttling must be between 1 and 110 Celsius, or 0 to clear".into());
+        }
+        if recovery == 0 || recovery >= throttling {
+            return Err("temperature recovery must be greater than 0 and lower than throttling".into());
+        }
+
+        self.params.temperature = TemperatureConfig {
+            throttling_temp: Some(throttling),
+            throttling_recovery_temp: Some(recovery),
+        };
+        if self.max_freq > *self.requested_range.end() {
+            self.max_freq = *self.requested_range.end();
+        }
+        info!(
+            "Temperature thresholds updated at runtime: throttling={}C, recovery={}C",
+            throttling, recovery
+        );
+        Ok(())
     }
 
     pub fn apply_test_mode_command(&mut self, frequency: u32, voltage: u32) -> Result<()> {

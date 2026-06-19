@@ -22,7 +22,7 @@ BIN_PATH="$INSTALL_DIR/cyan-skillfish-governor-smu"
 CONFIG_PATH="$INSTALL_DIR/config.toml"
 SERVICE_FILE="/etc/systemd/system/cyan-skillfish-governor-smu.service"
 PERFORMANCE_MODE_PATH="/usr/local/bin/cyan-skillfish-performance-mode"
-DBUS_POLICY_PATH="/etc/dbus-1/system.d/com.cyan.SkillFishGovernor.conf"
+DBUS_POLICY_PATH="/etc/dbus-1/system.d/com.cyanskillfish.Governor.conf"
 
 # Create installation directory
 echo "Creating installation directory..."
@@ -38,7 +38,7 @@ cp scripts/cyan-skillfish-performance-mode "$PERFORMANCE_MODE_PATH"
 chmod +x "$PERFORMANCE_MODE_PATH"
 
 echo "Installing D-Bus policy..."
-cp com.cyan.SkillFishGovernor.conf "$DBUS_POLICY_PATH"
+cp com.cyanskillfish.Governor.conf "$DBUS_POLICY_PATH"
 
 echo "Reloading D-Bus policy..."
 if command -v busctl >/dev/null 2>&1; then

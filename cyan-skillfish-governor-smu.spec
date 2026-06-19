@@ -5,8 +5,8 @@
 %global cargo_install_lib 0
 
 Name:           cyan-skillfish-governor-smu
-Version:        v0.2.0
-Release:        1.20251213124048676947.tt.0.g7f91021%{?dist}
+Version:        v0.4.6
+Release:        1.20260619120402457887.update.deps.3.g14080b4%{?dist}
 Summary:        # FIXME
 
 SourceLicense:  MIT
@@ -15,7 +15,7 @@ License:        MIT
 # LICENSE.dependencies contains a full license breakdown
 
 URL:            https://github.com/filippor/cyan-skillfish-governor
-Source:         cyan-skillfish-governor-smu-v0.1.7.tar.gz
+Source:         cyan-skillfish-governor-smu-v0.4.6.tar.gz
 
 BuildRequires: systemd cargo-rpm-macros >= 26 libdrm-devel
 
@@ -30,7 +30,7 @@ Requires(postun): systemd
 %description %{_description}
 
 %prep
-%autosetup -n cyan-skillfish-governor-smu-v0.1.7 -p1
+%autosetup -n cyan-skillfish-governor-smu-v0.4.6 -p1
 %cargo_prep
 
 %generate_buildrequires
@@ -51,7 +51,7 @@ mkdir -p %{buildroot}%{_sysconfdir}/%name/
 cp default-config.toml %{buildroot}%{_sysconfdir}/%name/config.toml
 install -Dm755 scripts/cyan-skillfish-performance-mode %{buildroot}%{_bindir}/cyan-skillfish-performance-mode
 mkdir -p %{buildroot}%{_datadir}/dbus-1/system.d/
-cp com.cyan.SkillFishGovernor.conf %{buildroot}%{_datadir}/dbus-1/system.d/com.cyan.SkillFishGovernor.conf
+cp com.cyanskillfish.Governor.conf %{buildroot}%{_datadir}/dbus-1/system.d/com.cyanskillfish.Governor.conf
 mkdir -p %{buildroot}/usr/lib/systemd/system-preset/
 #echo "enable %name.service" > %{buildroot}/usr/lib/systemd/system-preset/50-%name.preset
 
@@ -78,8 +78,8 @@ mkdir -p %{buildroot}/usr/lib/systemd/system-preset/
 %{_bindir}/cyan-skillfish-performance-mode
 %{_sysconfdir}/%name/config.toml
 %{_unitdir}/%name.service
-%{_datadir}/dbus-1/system.d/com.cyan.SkillFishGovernor.conf
-#/usr/lib/systemd/system-preset/50-%name.preset
+%{_datadir}/dbus-1/system.d/com.cyanskillfish.Governor.conf
+#/usr/lib/systemd/system-preset/50-#name.preset
 
 
 %changelog

@@ -14,7 +14,7 @@ fi
 INSTALL_DIR="/etc/cyan-skillfish-governor-smu"
 SERVICE_FILE="/etc/systemd/system/cyan-skillfish-governor-smu.service"
 PERFORMANCE_MODE_PATH="/usr/local/bin/cyan-skillfish-performance-mode"
-DBUS_POLICY_PATH="/etc/dbus-1/system.d/com.cyan.SkillFishGovernor.conf"
+DBUS_POLICY_PATH="/etc/dbus-1/system.d/com.cyanskillfish.Governor.conf"
 
 echo -e "${YELLOW}Uninstalling Cyan Skillfish Governor...${NC}"
 
