@@ -229,6 +229,12 @@ Top-level keys:
 
 Use [default-config.toml](default-config.toml) as a baseline profile.
 
+## Configuration note 
+At 25 FPS with heavy CPU load:
+GPU actually renders in ~18 ms per frame
+GPU waits ~22 ms for CPU
+GPU utilization shows 45% busy (not 100%)
+
 ## Performance Mode Script
 
 The configuration option `dbus.enabled` must be set to `true`.
@@ -298,6 +304,12 @@ D-Bus service exposed when `dbus.enabled = true`:
   - `SetRange(500, 1500)` — set both limits
   - `SetRange(0, 0)` — clear all limits (full range)
   - Thermal throttling still applies regardless of range
+- `SetTestMode(frequency: u32, voltage :u32)` — Set specific frequency and voltage and disable authomatic adjust. Thermal throttling remain active
+
+sample command:
+```
+busctl --system call "com.cyan.SkillFishGovernor" "/com/cyan/SkillFishGovernor" "com.cyan.SkillFishGovernor.PerformanceMode" SetTestMode uu 1500 1000
+```
 
 ### Properties
 

@@ -2,6 +2,7 @@ use crate::app_error::{AppError, Result};
 use crate::config::{GpuSetMethod, GpuUsageMethod};
 use cyan_skillfish_governor_smu::Bc250Smu;
 use libdrm_amdgpu_sys::{AMDGPU::DeviceHandle, PCI::BUS_INFO};
+use log::debug;
 use log::info;
 
 use std::{
@@ -122,6 +123,10 @@ impl GPU {
         self.freq_strategy.change_freq(freq, vol)
     }
 
+    pub fn change_freq_vol(&mut self, freq: u32, vol: u32) -> Result<()> {
+        self.freq_strategy.change_freq(freq, vol)
+    }
+
     pub fn get_freq(&self) -> Result<u32> {
         self.freq_strategy.get_freq()
     }
@@ -173,6 +178,7 @@ impl FreqStrategy for SmuFreqStrategy {
     fn change_freq(&mut self, freq: u32, vol: u32) -> Result<()> {
         self.smu.force_gfx_vid(vol)?;
         self.smu.force_gfx_freq(freq)?;
+        debug!("SMU set frequency to {} MHz with voltage {} mV", freq, vol);
         Ok(())
     }
 

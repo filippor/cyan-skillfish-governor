@@ -12,6 +12,7 @@ use zbus::fdo;
 pub enum PerformanceModeCommand {
     Enable,
     Disable,
+    SetTestMode(u32, u32),
     SetFixedFrequency(u32),
     SetRange(u32, u32),
 }
@@ -48,6 +49,11 @@ impl PerformanceModeIface {
         self.enabled.store(true, Ordering::Relaxed);
         self.send_command(PerformanceModeCommand::SetFixedFrequency(frequency));
     }
+
+    fn send_test_mode_update(&self, frequency: u32, voltage: u32) {
+        self.enabled.store(true, Ordering::Relaxed);
+        self.send_command(PerformanceModeCommand::SetTestMode(frequency, voltage));
+    }
 }
 
 #[zbus::interface(name = "com.cyan.SkillFishGovernor.PerformanceMode")]
@@ -62,6 +68,10 @@ impl PerformanceModeIface {
 
     fn set_fixed_frequency(&self, frequency: u32) {
         self.send_fixed_frequency_update(frequency);
+    }
+
+    fn set_test_mode(&self, frequency: u32, voltage: u32) {
+        self.send_test_mode_update(frequency, voltage);
     }
 
     #[zbus(property)]
