@@ -5,7 +5,7 @@
 %global crate libdrm_amdgpu_sys
 
 Name:           rust-libdrm_amdgpu_sys
-Version:        0.8.11
+Version:        0.8.16
 Release:        %autorelease
 Summary:        Libdrm_amdgpu bindings for Rust, and some methods ported from Mesa3D
 
