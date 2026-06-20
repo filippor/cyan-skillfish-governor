@@ -1,9 +1,8 @@
 use crate::app_error::Result;
-use crate::config::GovernorParams;
+use crate::governor::Governor;
 use log::{error, info};
 use std::sync::Arc;
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use zbus::blocking::connection::Builder as ConnectionBuilder;
 use zbus::fdo;
@@ -15,6 +14,14 @@ pub enum PerformanceModeCommand {
     Disable,
     SetTestMode(u32, u32),
     SetFixedFrequency(u32),
+    SetParameters {
+        min_freq: u32,
+        max_freq: u32,
+        load_min: f64,
+        load_max: f64,
+        throttling_temp: Option<u32>,
+        recovery_temp: Option<u32>,
+    },
     SetRange(u32, u32),
     SetLoadTarget(f64, f64),
     SetTemperatureThresholds(u32, u32),
@@ -24,49 +31,213 @@ const SERVICE_NAME: &str = "com.cyanskillfish.Governor";
 const OBJECT_PATH: &str = "/com/cyanskillfish/Governor";
 const INTERFACE_NAME: &str = "com.cyanskillfish.Governor.PerformanceMode";
 const TEST_MODE_INTERFACE_NAME: &str = "com.cyanskillfish.Governor.TestMode";
-
-#[derive(Debug, Clone, Copy)]
-struct PerformanceModeState {
-    current_range_min: u32,
-    current_range_max: u32,
-    allowed_range_min: u32,
-    allowed_range_max: u32,
-    initial_range_min: u32,
-    initial_range_max: u32,
-    load_target_min: f64,
-    load_target_max: f64,
-    throttling_temp: Option<u32>,
-    throttling_recovery_temp: Option<u32>,
-}
-
-impl PerformanceModeState {
-    fn from_params(params: &GovernorParams) -> Self {
-        Self {
-            current_range_min: *params.initial_frequency_range.start(),
-            current_range_max: *params.initial_frequency_range.end(),
-            allowed_range_min: *params.allowed_frequency_range.start(),
-            allowed_range_max: *params.allowed_frequency_range.end(),
-            initial_range_min: *params.initial_frequency_range.start(),
-            initial_range_max: *params.initial_frequency_range.end(),
-            load_target_min: f64::from(params.down_thresh),
-            load_target_max: f64::from(params.up_thresh),
-            throttling_temp: params.temperature.throttling_temp,
-            throttling_recovery_temp: params.temperature.throttling_recovery_temp,
-        }
-    }
-}
+const RANGE_INTERFACE_NAME: &str = "com.cyanskillfish.Governor.Range";
+const CURRENT_RANGE_OBJECT_PATH: &str = "/com/cyanskillfish/Governor/Range/Current";
+const ALLOWED_RANGE_OBJECT_PATH: &str = "/com/cyanskillfish/Governor/Range/Allowed";
+const INITIAL_RANGE_OBJECT_PATH: &str = "/com/cyanskillfish/Governor/Range/Initial";
 
 struct PerformanceModeIface {
-    enabled: Arc<AtomicBool>,
-    state: Arc<Mutex<PerformanceModeState>>,
+    state: Arc<Mutex<Governor>>,
     tx: Sender<PerformanceModeCommand>,
-    allowed_min: u32,
-    allowed_max: u32,
+}
+
+struct CurrentRangeIface {
+    state: Arc<Mutex<Governor>>,
+    tx: Sender<PerformanceModeCommand>,
+}
+
+#[derive(Clone, Copy)]
+enum RangeKind {
+    Allowed,
+    Initial,
+}
+
+struct ReadOnlyRangeIface {
+    state: Arc<Mutex<Governor>>,
+    kind: RangeKind,
 }
 
 struct TestModeIface {
-    enabled: Arc<AtomicBool>,
     tx: Sender<PerformanceModeCommand>,
+}
+
+#[zbus::interface(name = "com.cyanskillfish.Governor.PerformanceMode")]
+impl PerformanceModeIface {
+    fn set_fixed_frequency(&self, frequency: u32) {
+        self.send_command(PerformanceModeCommand::SetFixedFrequency(frequency));
+    }
+
+    fn set_range(&self, min: u32, max: u32) -> fdo::Result<()> {
+        self.apply_range(min, max)
+    }
+
+    fn set_load_target(&self, min: f64, max: f64) -> fdo::Result<()> {
+        self.apply_load_target(min, max)
+    }
+
+    fn set_temperature_thresholds(&self, throttling: u32, recovery: u32) -> fdo::Result<()> {
+        let throttling_opt = (throttling > 0).then_some(throttling);
+        let recovery_opt = (recovery > 0).then_some(recovery);
+        self.apply_temperature_thresholds(throttling_opt, recovery_opt)
+    }
+
+    fn set_parameters(
+        &self,
+        min_freq: u32,
+        max_freq: u32,
+        load_min: f64,
+        load_max: f64,
+        throttling_temp: u32,
+        recovery_temp: u32,
+    ) {
+        self.send_command(PerformanceModeCommand::SetParameters {
+            min_freq,
+            max_freq,
+            load_min,
+            load_max,
+            throttling_temp: (throttling_temp > 0).then_some(throttling_temp),
+            recovery_temp: (recovery_temp > 0).then_some(recovery_temp),
+        });
+    }
+
+    #[zbus(property)]
+    fn set_load_target_min(&self, value: f64) -> zbus::Result<()> {
+        let current_max = self.with_state(|state| state.load_target().1);
+        Self::fdo_to_zbus(self.apply_load_target(value, current_max))
+    }
+
+    #[zbus(property)]
+    fn load_target_min(&self) -> f64 {
+        self.with_state(|state| state.load_target().0)
+    }
+
+    #[zbus(property)]
+    fn set_load_target_max(&self, value: f64) -> zbus::Result<()> {
+        let current_min = self.with_state(|state| state.load_target().0);
+        Self::fdo_to_zbus(self.apply_load_target(current_min, value))
+    }
+
+    #[zbus(property)]
+    fn load_target_max(&self) -> f64 {
+        self.with_state(|state| state.load_target().1)
+    }
+
+    #[zbus(property)]
+    fn set_temperature_throttling(&self, value: u32) -> zbus::Result<()> {
+        let current_recovery = self.with_state(|state| state.temperature_thresholds().1);
+
+        if value == 0 {
+            return Self::fdo_to_zbus(self.apply_temperature_thresholds(None, None));
+        }
+
+        Self::fdo_to_zbus(self.apply_temperature_thresholds(Some(value), current_recovery))
+    }
+
+    #[zbus(property)]
+    fn temperature_throttling(&self) -> u32 {
+        self.with_state(|state| state.temperature_thresholds().0.unwrap_or(0))
+    }
+
+    #[zbus(property)]
+    fn set_temperature_recovery(&self, value: u32) -> zbus::Result<()> {
+        let current_throttling = self.with_state(|state| state.temperature_thresholds().0);
+
+        if value == 0 {
+            return Self::fdo_to_zbus(self.apply_temperature_thresholds(None, None));
+        }
+
+        Self::fdo_to_zbus(self.apply_temperature_thresholds(current_throttling, Some(value)))
+    }
+
+    #[zbus(property)]
+    fn temperature_recovery(&self) -> u32 {
+        self.with_state(|state| state.temperature_thresholds().1.unwrap_or(0))
+    }
+
+    #[zbus(property)]
+    fn enabled(&self) -> bool {
+        self.with_state(|state| state.performance_mode_enabled())
+    }
+
+    #[zbus(property)]
+    fn set_enabled(&self, value: bool) {
+        let command = if value {
+            PerformanceModeCommand::Enable
+        } else {
+            PerformanceModeCommand::Disable
+        };
+
+        self.send_command(command);
+    }
+}
+
+#[zbus::interface(name = "com.cyanskillfish.Governor.TestMode")]
+impl TestModeIface {
+    fn set_test_mode(&self, frequency: u32, voltage: u32) {
+        self.send_command(PerformanceModeCommand::SetTestMode(frequency, voltage));
+    }
+}
+
+#[zbus::interface(name = "com.cyanskillfish.Governor.Range")]
+impl CurrentRangeIface {
+    #[zbus(property)]
+    fn min(&self) -> u32 {
+        self.with_state(|state| state.current_range().0)
+    }
+
+    #[zbus(property)]
+    fn set_min(&self, value: u32) -> zbus::Result<()> {
+        Self::fdo_to_zbus(self.validate_range_bound("min", value))?;
+
+        let current_max = self.with_state(|state| state.current_range().1);
+        if current_max != 0 && value > current_max {
+            return Err(zbus::Error::FDO(Box::new(fdo::Error::InvalidArgs(
+                format!("Invalid range: min {} > max {}", value, current_max),
+            ))));
+        }
+
+        self.send_command(PerformanceModeCommand::SetRange(value, current_max));
+        Ok(())
+    }
+
+    #[zbus(property)]
+    fn max(&self) -> u32 {
+        self.with_state(|state| state.current_range().1)
+    }
+
+    #[zbus(property)]
+    fn set_max(&self, value: u32) -> zbus::Result<()> {
+        Self::fdo_to_zbus(self.validate_range_bound("max", value))?;
+
+        let current_min = self.with_state(|state| state.current_range().0);
+        if current_min != 0 && value != 0 && current_min > value {
+            return Err(zbus::Error::FDO(Box::new(fdo::Error::InvalidArgs(
+                format!("Invalid range: min {} > max {}", current_min, value),
+            ))));
+        }
+
+        self.send_command(PerformanceModeCommand::SetRange(current_min, value));
+        Ok(())
+    }
+}
+
+#[zbus::interface(name = "com.cyanskillfish.Governor.Range")]
+impl ReadOnlyRangeIface {
+    #[zbus(property)]
+    fn min(&self) -> u32 {
+        self.with_state(|state| match self.kind {
+            RangeKind::Allowed => state.allowed_range().0,
+            RangeKind::Initial => *state.startup_initial_range().start(),
+        })
+    }
+
+    #[zbus(property)]
+    fn max(&self) -> u32 {
+        self.with_state(|state| match self.kind {
+            RangeKind::Allowed => state.allowed_range().1,
+            RangeKind::Initial => *state.startup_initial_range().end(),
+        })
+    }
 }
 
 fn dispatch_command(tx: &Sender<PerformanceModeCommand>, command: PerformanceModeCommand) {
@@ -84,78 +255,37 @@ impl PerformanceModeIface {
         dispatch_command(&self.tx, command);
     }
 
-    fn with_state<R>(&self, f: impl FnOnce(&PerformanceModeState) -> R) -> R {
+    fn with_state<R>(&self, f: impl FnOnce(&Governor) -> R) -> R {
         let state = self.state.lock().expect("D-Bus state lock poisoned");
         f(&state)
     }
 
-    fn with_state_mut_infallible<R>(&self, f: impl FnOnce(&mut PerformanceModeState) -> R) -> R {
-        let mut state = self.state.lock().expect("D-Bus state lock poisoned");
-        f(&mut state)
-    }
+    fn apply_range(&self, min: u32, max: u32) -> fdo::Result<()> {
+        let (allowed_min, allowed_max) = self.with_state(|state| state.allowed_range());
 
-    fn with_state_mut<R>(&self, f: impl FnOnce(&mut PerformanceModeState) -> R) -> fdo::Result<R> {
-        let mut state = self
-            .state
-            .lock()
-            .map_err(|_| fdo::Error::Failed("failed to lock D-Bus state".into()))?;
-        Ok(f(&mut state))
-    }
-
-    fn validate_range_bound(&self, label: &str, value: u32) -> fdo::Result<()> {
-        if value != 0 && !(self.allowed_min..=self.allowed_max).contains(&value) {
+        if min != 0 && !(allowed_min..=allowed_max).contains(&min) {
             return Err(fdo::Error::InvalidArgs(format!(
-                "{} {} out of allowed range {}..={} MHz",
-                label, value, self.allowed_min, self.allowed_max
+                "min {} out of allowed range {}..={} MHz",
+                min, allowed_min, allowed_max
             )));
         }
+
+        if max != 0 && !(allowed_min..=allowed_max).contains(&max) {
+            return Err(fdo::Error::InvalidArgs(format!(
+                "max {} out of allowed range {}..={} MHz",
+                max, allowed_min, allowed_max
+            )));
+        }
+
+        if min != 0 && max != 0 && min > max {
+            return Err(fdo::Error::InvalidArgs(format!(
+                "invalid range: min {} > max {}",
+                min, max
+            )));
+        }
+
+        self.send_command(PerformanceModeCommand::SetRange(min, max));
         Ok(())
-    }
-
-    fn send_mode_update(&self, enabled: bool) {
-        self.enabled.store(enabled, Ordering::Relaxed);
-        self.with_state_mut_infallible(|state| {
-            if enabled {
-                state.current_range_min = state.allowed_range_min;
-                state.current_range_max = state.allowed_range_max;
-            } else {
-                state.current_range_min = state.initial_range_min;
-                state.current_range_max = state.initial_range_max;
-            }
-        });
-        let command = if enabled {
-            PerformanceModeCommand::Enable
-        } else {
-            PerformanceModeCommand::Disable
-        };
-
-        self.send_command(command);
-    }
-
-    fn send_fixed_frequency_update(&self, frequency: u32) {
-        self.enabled.store(true, Ordering::Relaxed);
-        self.with_state_mut_infallible(|state| {
-            state.current_range_min = state.initial_range_min;
-            state.current_range_max = frequency;
-        });
-        self.send_command(PerformanceModeCommand::SetFixedFrequency(frequency));
-    }
-
-    fn send_load_target_update(&self, min: f64, max: f64) {
-        self.send_command(PerformanceModeCommand::SetLoadTarget(min, max));
-    }
-
-    fn send_temperature_thresholds_update(&self, throttling: u32, recovery: u32) {
-        self.send_command(PerformanceModeCommand::SetTemperatureThresholds(
-            throttling, recovery,
-        ));
-    }
-
-    fn update_current_range(&self, min: u32, max: u32) {
-        self.with_state_mut_infallible(|state| {
-            state.current_range_min = min;
-            state.current_range_max = max;
-        });
     }
 
     fn apply_load_target(&self, min: f64, max: f64) -> fdo::Result<()> {
@@ -175,14 +305,7 @@ impl PerformanceModeIface {
             ));
         }
 
-        {
-            self.with_state_mut(|state| {
-                state.load_target_min = min;
-                state.load_target_max = max;
-            })?;
-        }
-
-        self.send_load_target_update(min, max);
+        self.send_command(PerformanceModeCommand::SetLoadTarget(min, max));
         Ok(())
     }
 
@@ -197,7 +320,7 @@ impl PerformanceModeIface {
             (Some(throttling), Some(recovery)) => {
                 if !(1..=110).contains(&throttling) {
                     return Err(fdo::Error::InvalidArgs(
-                        "temperature throttling must be between 1 and 110 Celsius, or 0 to clear"
+                        "temperature throttling must be between 1 and 110 Celsius, or 0 to disable"
                             .into(),
                     ));
                 }
@@ -211,175 +334,56 @@ impl PerformanceModeIface {
             }
             _ => {
                 return Err(fdo::Error::InvalidArgs(
-                    "temperature throttling and recovery must be set together or both cleared"
+                    "temperature throttling and recovery must be set together or both disabled"
                         .into(),
                 ));
             }
         };
 
-        self.with_state_mut(|state| {
-            state.throttling_temp = next_throttling;
-            state.throttling_recovery_temp = next_recovery;
-        })?;
-
-        self.send_temperature_thresholds_update(
+        self.send_command(PerformanceModeCommand::SetTemperatureThresholds(
             next_throttling.unwrap_or(0),
             next_recovery.unwrap_or(0),
-        );
+        ));
         Ok(())
+    }
+}
+
+impl CurrentRangeIface {
+    fn fdo_to_zbus<T>(result: fdo::Result<T>) -> zbus::Result<T> {
+        result.map_err(|err| zbus::Error::FDO(Box::new(err)))
+    }
+
+    fn with_state<R>(&self, f: impl FnOnce(&Governor) -> R) -> R {
+        let state = self.state.lock().expect("D-Bus state lock poisoned");
+        f(&state)
+    }
+
+    fn validate_range_bound(&self, label: &str, value: u32) -> fdo::Result<()> {
+        let (allowed_min, allowed_max) = self.with_state(|state| state.allowed_range());
+        if value != 0 && !(allowed_min..=allowed_max).contains(&value) {
+            return Err(fdo::Error::InvalidArgs(format!(
+                "{} {} out of allowed range {}..={} MHz",
+                label, value, allowed_min, allowed_max
+            )));
+        }
+        Ok(())
+    }
+
+    fn send_command(&self, command: PerformanceModeCommand) {
+        dispatch_command(&self.tx, command);
+    }
+}
+
+impl ReadOnlyRangeIface {
+    fn with_state<R>(&self, f: impl FnOnce(&Governor) -> R) -> R {
+        let state = self.state.lock().expect("D-Bus state lock poisoned");
+        f(&state)
     }
 }
 
 impl TestModeIface {
     fn send_command(&self, command: PerformanceModeCommand) {
         dispatch_command(&self.tx, command);
-    }
-
-    fn send_test_mode_update(&self, frequency: u32, voltage: u32) {
-        self.enabled.store(true, Ordering::Relaxed);
-        self.send_command(PerformanceModeCommand::SetTestMode(frequency, voltage));
-    }
-}
-
-#[zbus::interface(name = "com.cyanskillfish.Governor.PerformanceMode")]
-impl PerformanceModeIface {
-    fn set_fixed_frequency(&self, frequency: u32) {
-        self.send_fixed_frequency_update(frequency);
-    }
-
-    #[zbus(property)]
-    fn set_current_range_min(&self, value: u32) -> zbus::Result<()> {
-        Self::fdo_to_zbus(self.validate_range_bound("min", value))?;
-
-        let current_max = self.with_state(|state| state.current_range_max);
-
-        if current_max != 0 && value > current_max {
-            return Err(zbus::Error::FDO(Box::new(fdo::Error::InvalidArgs(
-                format!("Invalid range: min {} > max {}", value, current_max),
-            ))));
-        }
-
-        self.update_current_range(value, current_max);
-        self.send_command(PerformanceModeCommand::SetRange(value, current_max));
-        Ok(())
-    }
-
-    #[zbus(property)]
-    fn set_load_target_min(&self, value: f64) -> zbus::Result<()> {
-        let current_max = self.with_state(|state| state.load_target_max);
-        Self::fdo_to_zbus(self.apply_load_target(value, current_max))
-    }
-
-    #[zbus(property)]
-    fn load_target_min(&self) -> f64 {
-        self.with_state(|state| state.load_target_min)
-    }
-
-    #[zbus(property)]
-    fn set_load_target_max(&self, value: f64) -> zbus::Result<()> {
-        let current_min = self.with_state(|state| state.load_target_min);
-        Self::fdo_to_zbus(self.apply_load_target(current_min, value))
-    }
-
-    #[zbus(property)]
-    fn load_target_max(&self) -> f64 {
-        self.with_state(|state| state.load_target_max)
-    }
-
-    #[zbus(property)]
-    fn current_range_min(&self) -> u32 {
-        self.with_state(|state| state.current_range_min)
-    }
-
-    #[zbus(property)]
-    fn set_current_range_max(&self, value: u32) -> zbus::Result<()> {
-        Self::fdo_to_zbus(self.validate_range_bound("max", value))?;
-
-        let current_min = self.with_state(|state| state.current_range_min);
-
-        if current_min != 0 && value != 0 && current_min > value {
-            return Err(zbus::Error::FDO(Box::new(fdo::Error::InvalidArgs(
-                format!("Invalid range: min {} > max {}", current_min, value),
-            ))));
-        }
-
-        self.update_current_range(current_min, value);
-        self.send_command(PerformanceModeCommand::SetRange(current_min, value));
-        Ok(())
-    }
-
-    #[zbus(property)]
-    fn current_range_max(&self) -> u32 {
-        self.with_state(|state| state.current_range_max)
-    }
-
-    #[zbus(property)]
-    fn allowed_range_min(&self) -> u32 {
-        self.with_state(|state| state.allowed_range_min)
-    }
-
-    #[zbus(property)]
-    fn allowed_range_max(&self) -> u32 {
-        self.with_state(|state| state.allowed_range_max)
-    }
-
-    #[zbus(property)]
-    fn initial_range_min(&self) -> u32 {
-        self.with_state(|state| state.initial_range_min)
-    }
-
-    #[zbus(property)]
-    fn initial_range_max(&self) -> u32 {
-        self.with_state(|state| state.initial_range_max)
-    }
-
-    #[zbus(property)]
-    fn set_temperature_throttling(&self, value: u32) -> zbus::Result<()> {
-        let current_recovery = self.with_state(|state| state.throttling_recovery_temp);
-
-        if value == 0 {
-            return Self::fdo_to_zbus(self.apply_temperature_thresholds(None, None));
-        }
-
-        Self::fdo_to_zbus(self.apply_temperature_thresholds(Some(value), current_recovery))
-    }
-
-    #[zbus(property)]
-    fn temperature_throttling(&self) -> u32 {
-        self.with_state(|state| state.throttling_temp.unwrap_or(0))
-    }
-
-    #[zbus(property)]
-    fn set_temperature_recovery(&self, value: u32) -> zbus::Result<()> {
-        let current_throttling = self.with_state(|state| state.throttling_temp);
-
-        if value == 0 {
-            return Self::fdo_to_zbus(self.apply_temperature_thresholds(None, None));
-        }
-
-        Self::fdo_to_zbus(self.apply_temperature_thresholds(current_throttling, Some(value)))
-    }
-
-    #[zbus(property)]
-    fn temperature_recovery(&self) -> u32 {
-        self.with_state(|state| state.throttling_recovery_temp.unwrap_or(0))
-    }
-
-    #[zbus(property)]
-    fn enabled(&self) -> bool {
-        self.enabled.load(Ordering::Relaxed)
-    }
-
-    #[zbus(property)]
-    fn set_enabled(&self, value: bool) {
-        self.send_mode_update(value);
-    }
-}
-
-#[zbus::interface(name = "com.cyanskillfish.Governor.TestMode")]
-impl TestModeIface {
-    fn set_test_mode(&self, frequency: u32, voltage: u32) {
-        self.send_test_mode_update(frequency, voltage);
     }
 }
 
@@ -388,48 +392,42 @@ pub struct DbusService;
 
 pub struct DbusServiceHandle {
     pub command_rx: Receiver<PerformanceModeCommand>,
-    pub enabled_state: Arc<AtomicBool>,
 }
 
 impl DbusService {
     /// Start the D-Bus service in a background thread
     /// Returns a receiver for performance mode commands
-    pub fn start(params: &GovernorParams) -> Result<DbusServiceHandle> {
+    pub fn start(state: Arc<Mutex<Governor>>) -> Result<DbusServiceHandle> {
         let (tx, rx) = mpsc::channel();
-        let allowed_min = *params.allowed_frequency_range.start();
-        let allowed_max = *params.allowed_frequency_range.end();
-        let state = Arc::new(Mutex::new(PerformanceModeState::from_params(params)));
-        let enabled = Arc::new(AtomicBool::new(false));
-        let enabled_state = Arc::clone(&enabled);
 
         std::thread::spawn(move || {
-            if let Err(e) = Self::run_service(tx, enabled, state, allowed_min, allowed_max) {
+            if let Err(e) = Self::run_service(tx, state) {
                 error!("D-Bus service error: {}", e);
             }
         });
 
         info!("D-Bus service thread started");
-        Ok(DbusServiceHandle {
-            command_rx: rx,
-            enabled_state,
-        })
+        Ok(DbusServiceHandle { command_rx: rx })
     }
 
-    fn run_service(
-        tx: Sender<PerformanceModeCommand>,
-        enabled: Arc<AtomicBool>,
-        state: Arc<Mutex<PerformanceModeState>>,
-        allowed_min: u32,
-        allowed_max: u32,
-    ) -> Result<()> {
+    fn run_service(tx: Sender<PerformanceModeCommand>, state: Arc<Mutex<Governor>>) -> Result<()> {
         let perf_iface = PerformanceModeIface {
-            enabled: enabled.clone(),
             state: state.clone(),
             tx: tx.clone(),
-            allowed_min,
-            allowed_max,
         };
-        let test_iface = TestModeIface { enabled, tx };
+        let current_range_iface = CurrentRangeIface {
+            state: state.clone(),
+            tx: tx.clone(),
+        };
+        let allowed_range_iface = ReadOnlyRangeIface {
+            state: state.clone(),
+            kind: RangeKind::Allowed,
+        };
+        let initial_range_iface = ReadOnlyRangeIface {
+            state: state.clone(),
+            kind: RangeKind::Initial,
+        };
+        let test_iface = TestModeIface { tx };
 
         let _connection = ConnectionBuilder::system()
             .map_err(|err| format!("failed to create D-Bus system connection: {err}"))?
@@ -438,6 +436,24 @@ impl DbusService {
             .serve_at(OBJECT_PATH, perf_iface)
             .map_err(|err| {
                 format!("failed to export D-Bus object {OBJECT_PATH} ({INTERFACE_NAME}): {err}")
+            })?
+            .serve_at(CURRENT_RANGE_OBJECT_PATH, current_range_iface)
+            .map_err(|err| {
+                format!(
+                    "failed to export D-Bus object {CURRENT_RANGE_OBJECT_PATH} ({RANGE_INTERFACE_NAME}): {err}"
+                )
+            })?
+            .serve_at(ALLOWED_RANGE_OBJECT_PATH, allowed_range_iface)
+            .map_err(|err| {
+                format!(
+                    "failed to export D-Bus object {ALLOWED_RANGE_OBJECT_PATH} ({RANGE_INTERFACE_NAME}): {err}"
+                )
+            })?
+            .serve_at(INITIAL_RANGE_OBJECT_PATH, initial_range_iface)
+            .map_err(|err| {
+                format!(
+                    "failed to export D-Bus object {INITIAL_RANGE_OBJECT_PATH} ({RANGE_INTERFACE_NAME}): {err}"
+                )
             })?
             .serve_at(OBJECT_PATH, test_iface)
             .map_err(|err| {
@@ -454,13 +470,27 @@ impl DbusService {
             "D-Bus test mode service ready: {} {} {}",
             SERVICE_NAME, OBJECT_PATH, TEST_MODE_INTERFACE_NAME
         );
+        info!(
+            "D-Bus current range service ready: {} {} {}",
+            SERVICE_NAME, CURRENT_RANGE_OBJECT_PATH, RANGE_INTERFACE_NAME
+        );
+        info!(
+            "D-Bus allowed range service ready: {} {} {}",
+            SERVICE_NAME, ALLOWED_RANGE_OBJECT_PATH, RANGE_INTERFACE_NAME
+        );
+        info!(
+            "D-Bus initial range service ready: {} {} {}",
+            SERVICE_NAME, INITIAL_RANGE_OBJECT_PATH, RANGE_INTERFACE_NAME
+        );
         if let Ok(state) = state.lock() {
+            let (load_min, load_max) = state.load_target();
+            let (throttling, recovery) = state.temperature_thresholds();
             info!(
                 "D-Bus exposed load target min/max: {:.2}/{:.2}, temperature throttling/recovery: {}/{}",
-                state.load_target_min,
-                state.load_target_max,
-                state.throttling_temp.unwrap_or(0),
-                state.throttling_recovery_temp.unwrap_or(0)
+                load_min,
+                load_max,
+                throttling.unwrap_or(0),
+                recovery.unwrap_or(0)
             );
         }
 

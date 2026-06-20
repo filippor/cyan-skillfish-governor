@@ -18,6 +18,7 @@ pub struct Governor {
     usage_fix_cycle: u32,
     max_freq: u32,
     requested_range: RangeInclusive<u32>,
+    startup_initial_range: RangeInclusive<u32>,
     performance_mode: bool,
     test_mode: bool,
 }
@@ -32,6 +33,7 @@ impl Governor {
         let target_freq = *params.allowed_frequency_range.start();
         let max_freq = *params.allowed_frequency_range.end();
         let requested_range = params.initial_frequency_range.clone();
+        let startup_initial_range = params.initial_frequency_range.clone();
 
         Ok(Self {
             params,
@@ -43,6 +45,7 @@ impl Governor {
             usage_fix_cycle: 0,
             max_freq,
             requested_range,
+            startup_initial_range,
             performance_mode: false,
             test_mode: false,
         })
@@ -116,24 +119,18 @@ impl Governor {
         Ok(())
     }
 
-    pub fn apply_enable_command(&mut self) {
-        info!("Performance mode enabled");
-        self.performance_mode = true;
-        self.test_mode = false;
-        self.requested_range = self.params.allowed_frequency_range.clone();
+    pub fn apply_enable_performance_mode_command(&mut self, value: bool) {
         info!(
-            "Updated performance mode: {} range : {}..={}",
-            self.performance_mode,
-            self.requested_range.start(),
-            self.requested_range.end()
+            "Performance mode {}",
+            if value { "enabled" } else { "disabled" }
         );
-    }
-
-    pub fn apply_disable_command(&mut self) {
-        info!("Performance mode disabled: reverting to adaptive frequency control");
-        self.performance_mode = false;
+        self.performance_mode = value;
         self.test_mode = false;
-        self.requested_range = self.params.initial_frequency_range.clone();
+        self.requested_range = if value {
+            self.params.allowed_frequency_range.clone()
+        } else {
+            self.startup_initial_range.clone()
+        };
         info!(
             "Updated performance mode: {} range : {}..={}",
             self.performance_mode,
@@ -149,7 +146,7 @@ impl Governor {
         );
         self.performance_mode = true;
         self.test_mode = false;
-        self.requested_range = *self.params.initial_frequency_range.start()..=frequency;
+        self.requested_range = *self.startup_initial_range.start()..=frequency;
         if self.max_freq > frequency {
             self.max_freq = frequency;
         }
@@ -159,9 +156,9 @@ impl Governor {
         self.test_mode = false;
         match (min, max) {
             (0, 0) => {
-                info!("Frequency range cleared: both limits removed");
+                info!("Frequency range reset: restored initial limits");
                 self.performance_mode = false;
-                self.requested_range = self.params.initial_frequency_range.clone();
+                self.requested_range = self.startup_initial_range.clone();
                 info!(
                     "Updated range : {}..={}",
                     self.requested_range.start(),
@@ -169,9 +166,12 @@ impl Governor {
                 );
             }
             (0, ma) if self.params.allowed_frequency_range.contains(&ma) => {
-                info!("Upper limit set to {} MHz, lower limit removed", ma);
+                info!(
+                    "Upper limit set to {} MHz, lower limit reset to initial value",
+                    ma
+                );
                 self.performance_mode = false;
-                self.requested_range = *self.params.initial_frequency_range.start()..=ma;
+                self.requested_range = *self.startup_initial_range.start()..=ma;
                 info!(
                     "Updated range : {}..={}",
                     self.requested_range.start(),
@@ -179,9 +179,12 @@ impl Governor {
                 );
             }
             (mi, 0) if self.params.allowed_frequency_range.contains(&mi) => {
-                info!("Lower limit set to {} MHz, upper limit removed", mi);
+                info!(
+                    "Lower limit set to {} MHz, upper limit reset to initial value",
+                    mi
+                );
                 self.performance_mode = false;
-                self.requested_range = mi..=*self.params.initial_frequency_range.end();
+                self.requested_range = mi..=*self.startup_initial_range.end();
                 info!(
                     "Updated range : {}..={}",
                     self.requested_range.start(),
@@ -246,13 +249,13 @@ impl Governor {
                 throttling_temp: None,
                 throttling_recovery_temp: None,
             };
-            info!("Temperature throttling thresholds cleared at runtime");
+            info!("Temperature throttling disabled at runtime");
             return Ok(());
         }
 
         if !(1..=110).contains(&throttling) {
             return Err(
-                "temperature throttling must be between 1 and 110 Celsius, or 0 to clear".into(),
+                "temperature throttling must be between 1 and 110 Celsius, or 0 to disable".into(),
             );
         }
         if recovery == 0 || recovery >= throttling {
@@ -300,6 +303,35 @@ impl Governor {
 
     pub fn performance_mode_enabled(&self) -> bool {
         self.performance_mode
+    }
+
+    pub fn startup_initial_range(&self) -> RangeInclusive<u32> {
+        self.startup_initial_range.clone()
+    }
+
+    pub fn current_range(&self) -> (u32, u32) {
+        (*self.requested_range.start(), *self.requested_range.end())
+    }
+
+    pub fn allowed_range(&self) -> (u32, u32) {
+        (
+            *self.params.allowed_frequency_range.start(),
+            *self.params.allowed_frequency_range.end(),
+        )
+    }
+
+    pub fn load_target(&self) -> (f64, f64) {
+        (
+            f64::from(self.params.down_thresh),
+            f64::from(self.params.up_thresh),
+        )
+    }
+
+    pub fn temperature_thresholds(&self) -> (Option<u32>, Option<u32>) {
+        (
+            self.params.temperature.throttling_temp,
+            self.params.temperature.throttling_recovery_temp,
+        )
     }
 
     fn update_max_freq_for_temperature(&mut self) -> Result<u32> {

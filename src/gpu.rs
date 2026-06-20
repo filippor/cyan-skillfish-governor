@@ -14,7 +14,7 @@ use kernel_freq_strategy::KernelFreqStrategy;
 mod process_usage_strategy;
 use process_usage_strategy::ProcessUsageStrategy;
 
-trait FreqStrategy {
+trait FreqStrategy: Send {
     fn change_freq(&mut self, freq: u32, vol: u32) -> Result<()>;
     fn get_freq(&self) -> Result<u32>;
     fn shutdown(&mut self) -> Result<()> {
@@ -25,7 +25,7 @@ trait FreqStrategy {
     }
 }
 
-trait UsageStrategy {
+trait UsageStrategy: Send {
     fn poll_and_get_load(&mut self) -> Result<(f32, u32)>;
 }
 
@@ -33,8 +33,8 @@ pub struct GPU {
     dev_handle: DeviceHandle,
     pub min_freq: u32,
     pub max_freq: u32,
-    freq_strategy: Box<dyn FreqStrategy>,
-    usage_strategy: Box<dyn UsageStrategy>,
+    freq_strategy: Box<dyn FreqStrategy + Send>,
+    usage_strategy: Box<dyn UsageStrategy + Send>,
     safe_points: BTreeMap<u32, u32>,
     location: BUS_INFO,
 }
@@ -59,7 +59,7 @@ impl GPU {
             gpu_set_method.as_config_value()
         );
 
-        let freq_strategy: Box<dyn FreqStrategy> = match gpu_set_method {
+        let freq_strategy: Box<dyn FreqStrategy + Send> = match gpu_set_method {
             GpuSetMethod::Smu => Box::new(SmuFreqStrategy::new()?),
             GpuSetMethod::Kernel => {
                 Box::new(KernelFreqStrategy::new(location.get_drm_render_path()?)?)
@@ -68,7 +68,7 @@ impl GPU {
 
         let safe_points = freq_strategy.clamp_safe_points(safe_points)?;
 
-        let usage_strategy: Box<dyn UsageStrategy> = match gpu_usage_method {
+        let usage_strategy: Box<dyn UsageStrategy + Send> = match gpu_usage_method {
             GpuUsageMethod::BusyFlag => Box::new(BusyFlagUsageStrategy::new(
                 location.get_drm_render_path()?,
                 sampling_interval,
