@@ -4,7 +4,7 @@ use crate::gpu::GPU;
 use crate::gpu_usage_fix::GpuUsageFix;
 use log::{debug, error, info};
 use std::ops::RangeInclusive;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 const UP_EVENTS: i16 = 2;
 
@@ -21,6 +21,7 @@ pub struct Governor {
     startup_initial_range: RangeInclusive<u32>,
     performance_mode: bool,
     test_mode: bool,
+    target_cycle_interval: Duration,
 }
 
 impl Governor {
@@ -34,7 +35,7 @@ impl Governor {
         let max_freq = *params.allowed_frequency_range.end();
         let requested_range = params.initial_frequency_range.clone();
         let startup_initial_range = params.initial_frequency_range.clone();
-
+        let target_cycle_interval = params.adjustment_interval.clone();
         Ok(Self {
             params,
             gpu,
@@ -48,11 +49,11 @@ impl Governor {
             startup_initial_range,
             performance_mode: false,
             test_mode: false,
+            target_cycle_interval,
         })
     }
 
     pub fn run_iteration(&mut self) -> Result<()> {
-        let loop_start = Instant::now();
 
         let (average_load, burst_length) = if !self.performance_mode || self.gpu_usage_fix.is_some()
         {
@@ -102,7 +103,7 @@ impl Governor {
                 self.curr_freq = self.target_freq;
             }
         }
-        let target_cycle_interval = if self.performance_mode {
+        self.target_cycle_interval = if self.performance_mode {
             self.params
                 .adjustment_interval
                 .checked_mul(self.params.flush_every.max(1))
@@ -111,10 +112,7 @@ impl Governor {
             self.params.adjustment_interval
         };
 
-        let elapsed = loop_start.elapsed();
-        if elapsed < target_cycle_interval {
-            std::thread::sleep(target_cycle_interval - elapsed);
-        }
+        
 
         Ok(())
     }
@@ -139,7 +137,17 @@ impl Governor {
         );
     }
 
-    pub fn apply_fixed_frequency_command(&mut self, frequency: u32) {
+    pub fn apply_fixed_frequency_command(&mut self, frequency: u32) -> Result<()> {
+        if !self.params.allowed_frequency_range.contains(&frequency) {
+            return Err(format!(
+                "fixed frequency {} out of allowed range {}..={} MHz",
+                frequency,
+                *self.params.allowed_frequency_range.start(),
+                *self.params.allowed_frequency_range.end()
+            )
+            .into());
+        }
+
         info!(
             "Performance mode enabled with fixed frequency request: {}",
             frequency
@@ -150,10 +158,59 @@ impl Governor {
         if self.max_freq > frequency {
             self.max_freq = frequency;
         }
+        Ok(())
     }
 
-    pub fn apply_range_command(&mut self, min: u32, max: u32) {
+    pub fn apply_parameters_command(
+        &mut self,
+        min_freq: u32,
+        max_freq: u32,
+        load_min: f64,
+        load_max: f64,
+        throttling_temp: u32,
+        recovery_temp: u32,
+    ) -> Result<()> {
+        self.apply_range_command(min_freq, max_freq)?;
+        self.apply_load_target_command(load_min, load_max)?;
+        self.apply_temperature_thresholds_command(
+            if throttling_temp > 0 {
+                throttling_temp
+            } else {
+                0
+            },
+            if recovery_temp > 0 { recovery_temp } else { 0 },
+        )?;
+
+        Ok(())
+    }
+
+    pub fn apply_range_command(&mut self, min: u32, max: u32) -> Result<()> {
         self.test_mode = false;
+        let (allowed_min, allowed_max) = (
+            *self.params.allowed_frequency_range.start(),
+            *self.params.allowed_frequency_range.end(),
+        );
+
+        if min != 0 && !(allowed_min..=allowed_max).contains(&min) {
+            return Err(format!(
+                "min {} out of allowed range {}..={} MHz",
+                min, allowed_min, allowed_max
+            )
+            .into());
+        }
+
+        if max != 0 && !(allowed_min..=allowed_max).contains(&max) {
+            return Err(format!(
+                "max {} out of allowed range {}..={} MHz",
+                max, allowed_min, allowed_max
+            )
+            .into());
+        }
+
+        if min != 0 && max != 0 && min > max {
+            return Err(format!("invalid range: min {} > max {}", min, max).into());
+        }
+
         match (min, max) {
             (0, 0) => {
                 info!("Frequency range reset: restored initial limits");
@@ -204,21 +261,16 @@ impl Governor {
                     self.requested_range.end()
                 );
             }
-            (mi, ma) => {
-                error!(
-                    "D-Bus command handling failed, keeping previous state: Invalid frequency range request: min={} MHz, max={} MHz (allowed {}..={} MHz)",
-                    mi,
-                    ma,
-                    *self.params.allowed_frequency_range.start(),
-                    *self.params.allowed_frequency_range.end()
-                );
-            }
+            _ => unreachable!("range validation should have rejected invalid input"),
         }
         if self.max_freq > *self.requested_range.end() {
             self.max_freq = *self.requested_range.end();
         }
+        Ok(())
     }
-
+    pub fn target_cycle_interval(&self) -> Duration {
+        self.target_cycle_interval
+    }
     pub fn apply_load_target_command(&mut self, min: f64, max: f64) -> Result<()> {
         if !min.is_finite() || !max.is_finite() {
             return Err("load target values must be finite numbers".into());
@@ -319,7 +371,7 @@ impl Governor {
             *self.params.allowed_frequency_range.end(),
         )
     }
-
+    
     pub fn load_target(&self) -> (f64, f64) {
         (
             f64::from(self.params.down_thresh),
@@ -333,6 +385,7 @@ impl Governor {
             self.params.temperature.throttling_recovery_temp,
         )
     }
+
 
     fn update_max_freq_for_temperature(&mut self) -> Result<u32> {
         let temp = self.gpu.read_temperature()?;
