@@ -63,7 +63,7 @@ call_set_enabled() {
     local value="$1"
 
     if has_cmd busctl; then
-        busctl --system set-property "$SERVICE_NAME" "$OBJECT_PATH" "$INTERFACE" Enabled b "$value" >/dev/null 2>&1
+        busctl --system set-property "$SERVICE_NAME" "$OBJECT_PATH" "$INTERFACE" Enabled b "$value" >/dev/null
         return $?
     fi
 
@@ -74,7 +74,7 @@ call_set_enabled() {
             org.freedesktop.DBus.Properties.Set \
             string:"$INTERFACE" \
             string:"Enabled" \
-            variant:boolean:"$value" >/dev/null 2>&1
+            variant:boolean:"$value" >/dev/null
         return $?
     fi
 
@@ -86,7 +86,7 @@ call_set_fixed_frequency() {
     local frequency="$1"
 
     if has_cmd busctl; then
-        busctl --system call "$SERVICE_NAME" "$OBJECT_PATH" "$INTERFACE" SetFixedFrequency u "$frequency" >/dev/null 2>&1
+        busctl --system call "$SERVICE_NAME" "$OBJECT_PATH" "$INTERFACE" SetFixedFrequency u "$frequency" >/dev/null
         return $?
     fi
 
@@ -95,7 +95,7 @@ call_set_fixed_frequency() {
             --dest="$SERVICE_NAME" \
             "$OBJECT_PATH" \
             "$INTERFACE.SetFixedFrequency" \
-            uint32:"$frequency" >/dev/null 2>&1
+            uint32:"$frequency" >/dev/null
         return $?
     fi
 
@@ -107,7 +107,7 @@ call_set_range() {
     local min="$1"
     local max="$2"
     if has_cmd busctl; then
-        busctl --system call "$SERVICE_NAME" "$OBJECT_PATH" "$INTERFACE" SetRange uu "$min" "$max" >/dev/null 2>&1
+        busctl --system call "$SERVICE_NAME" "$OBJECT_PATH" "$INTERFACE" SetRange uu "$min" "$max" >/dev/null
         return $?
     fi
 
@@ -117,7 +117,7 @@ call_set_range() {
             "$OBJECT_PATH" \
             "$INTERFACE.SetRange" \
             uint32:"$min" \
-            uint32:"$max" >/dev/null 2>&1
+            uint32:"$max" >/dev/null
         return $?
     fi
 
@@ -176,7 +176,7 @@ call_set_property_u32() {
     local value="$2"
 
     if has_cmd busctl; then
-        busctl --system set-property "$SERVICE_NAME" "$OBJECT_PATH" "$INTERFACE" "$property_name" u "$value" >/dev/null 2>&1
+        busctl --system set-property "$SERVICE_NAME" "$OBJECT_PATH" "$INTERFACE" "$property_name" u "$value" >/dev/null
         return $?
     fi
 
@@ -187,7 +187,7 @@ call_set_property_u32() {
             org.freedesktop.DBus.Properties.Set \
             string:"$INTERFACE" \
             string:"$property_name" \
-            variant:uint32:"$value" >/dev/null 2>&1
+            variant:uint32:"$value" >/dev/null
         return $?
     fi
 
@@ -200,7 +200,7 @@ call_set_current_range_property_u32() {
     local value="$2"
 
     if has_cmd busctl; then
-        busctl --system set-property "$SERVICE_NAME" "$RANGE_OBJECT_PATH_CURRENT" "$RANGE_INTERFACE" "$property_name" u "$value" >/dev/null 2>&1
+        busctl --system set-property "$SERVICE_NAME" "$RANGE_OBJECT_PATH_CURRENT" "$RANGE_INTERFACE" "$property_name" u "$value" >/dev/null
         return $?
     fi
 
@@ -211,7 +211,7 @@ call_set_current_range_property_u32() {
             org.freedesktop.DBus.Properties.Set \
             string:"$RANGE_INTERFACE" \
             string:"$property_name" \
-            variant:uint32:"$value" >/dev/null 2>&1
+            variant:uint32:"$value" >/dev/null
         return $?
     fi
 
@@ -224,7 +224,7 @@ call_set_property_double() {
     local value="$2"
 
     if has_cmd busctl; then
-        busctl --system set-property "$SERVICE_NAME" "$OBJECT_PATH" "$INTERFACE" "$property_name" d "$value" >/dev/null 2>&1
+        busctl --system set-property "$SERVICE_NAME" "$OBJECT_PATH" "$INTERFACE" "$property_name" d "$value" >/dev/null
         return $?
     fi
 
@@ -235,7 +235,7 @@ call_set_property_double() {
             org.freedesktop.DBus.Properties.Set \
             string:"$INTERFACE" \
             string:"$property_name" \
-            variant:double:"$value" >/dev/null 2>&1
+            variant:double:"$value" >/dev/null
         return $?
     fi
 
@@ -247,7 +247,7 @@ call_set_load_target() {
     local min="$1"
     local max="$2"
     if has_cmd busctl; then
-        busctl --system call "$SERVICE_NAME" "$OBJECT_PATH" "$INTERFACE" SetLoadTarget dd "$min" "$max" >/dev/null 2>&1
+        busctl --system call "$SERVICE_NAME" "$OBJECT_PATH" "$INTERFACE" SetLoadTarget dd "$min" "$max" >/dev/null
         return $?
     fi
 
@@ -257,7 +257,7 @@ call_set_load_target() {
             "$OBJECT_PATH" \
             "$INTERFACE.SetLoadTarget" \
             double:"$min" \
-            double:"$max" >/dev/null 2>&1
+            double:"$max" >/dev/null
         return $?
     fi
 
@@ -269,7 +269,7 @@ call_set_temperature() {
     local throttling="$1"
     local recovery="$2"
     if has_cmd busctl; then
-        busctl --system call "$SERVICE_NAME" "$OBJECT_PATH" "$INTERFACE" SetTemperatureThresholds uu "$throttling" "$recovery" >/dev/null 2>&1
+        busctl --system call "$SERVICE_NAME" "$OBJECT_PATH" "$INTERFACE" SetTemperatureThresholds uu "$throttling" "$recovery" >/dev/null
         return $?
     fi
 
@@ -279,7 +279,7 @@ call_set_temperature() {
             "$OBJECT_PATH" \
             "$INTERFACE.SetTemperatureThresholds" \
             uint32:"$throttling" \
-            uint32:"$recovery" >/dev/null 2>&1
+            uint32:"$recovery" >/dev/null
         return $?
     fi
 
@@ -312,6 +312,13 @@ cleanup() {
     call_set_enabled false || true
 }
 
+print_service_hint_if_not_running() {
+    if ! has_service_owner; then
+        echo "The governor service does not appear to be running." >&2
+        echo "Try: sudo systemctl status cyan-skillfish-governor-smu" >&2
+    fi
+}
+
 # No arguments: show usage
 if [ "$#" -eq 0 ]; then
     usage
@@ -325,8 +332,8 @@ case "$1" in
             echo "Performance mode enabled"
             exit 0
         else
-            echo "Error: failed to enable performance mode. Is the service running?" >&2
-            echo "Try: sudo systemctl status cyan-skillfish-governor-smu" >&2
+            echo "Error: failed to enable performance mode." >&2
+            print_service_hint_if_not_running
             exit 1
         fi
         ;;
@@ -362,8 +369,8 @@ case "$1" in
 
             exit 0
         else
-            echo "Error: failed to set fixed frequency. Is the service running?" >&2
-            echo "Try: sudo systemctl status cyan-skillfish-governor-smu" >&2
+            echo "Error: failed to set fixed frequency." >&2
+            print_service_hint_if_not_running
             exit 1
         fi
         ;;
@@ -399,6 +406,8 @@ case "$1" in
 
             exit 0
         else
+            echo "Error: failed to set frequency range." >&2
+            print_service_hint_if_not_running
             exit 1
         fi
         ;;
@@ -435,8 +444,8 @@ case "$1" in
 
             exit 0
         else
-            echo "Error: failed to set load target. Is the service running?" >&2
-            echo "Try: sudo systemctl status cyan-skillfish-governor-smu" >&2
+            echo "Error: failed to set load target." >&2
+            print_service_hint_if_not_running
             exit 1
         fi
         ;;
@@ -472,8 +481,8 @@ case "$1" in
 
             exit 0
         else
-            echo "Error: failed to set temperature thresholds. Is the service running?" >&2
-            echo "Try: sudo systemctl status cyan-skillfish-governor-smu" >&2
+            echo "Error: failed to set temperature thresholds." >&2
+            print_service_hint_if_not_running
             exit 1
         fi
         ;;
@@ -487,8 +496,8 @@ case "$1" in
                 exit 0
             fi
 
-            echo "Error: failed to disable performance mode. Is the service running?" >&2
-            echo "Try: sudo systemctl status cyan-skillfish-governor-smu" >&2
+            echo "Error: failed to disable performance mode." >&2
+            print_service_hint_if_not_running
             exit 1
         fi
         ;;
