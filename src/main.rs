@@ -15,8 +15,8 @@ use gpu_usage_fix::GpuUsageFix;
 use log::{info, warn};
 use signal_hook::consts::signal::*;
 use signal_hook::iterator::Signals;
-use std::sync::atomic::Ordering;
 use std::sync::mpsc::{self, Sender, TryRecvError};
+use std::sync::{Arc, Mutex};
 
 const BUILD_VERSION: &str = env!("GIT_VERSION");
 
@@ -51,15 +51,6 @@ fn main() -> Result<()> {
     )?;
     let params: GovernorParams = config.to_governor_params(&gpu);
 
-    let (mut dbus_rx, mut dbus_enabled_state) = if config.dbus.enabled {
-        info!("D-Bus service listening enabled");
-        let handle = dbus::DbusService::start(&params)?;
-        (Some(handle.command_rx), Some(handle.enabled_state))
-    } else {
-        info!("D-Bus service listening disabled in configuration");
-        (None, None)
-    };
-
     let gpu_usage_fix = if config.gpu_usage.fix_metrics {
         info!("GPU usage metrics fix enabled");
         Some(GpuUsageFix::start(gpu.get_sysfs_path())?)
@@ -67,7 +58,16 @@ fn main() -> Result<()> {
         None
     };
 
-    let mut governor = Governor::new(params, gpu, gpu_usage_fix)?;
+    let governor = Arc::new(Mutex::new(Governor::new(params, gpu, gpu_usage_fix)?));
+
+    let mut dbus_rx = if config.dbus.enabled {
+        info!("D-Bus service listening enabled");
+        let handle = dbus::DbusService::start(Arc::clone(&governor))?;
+        Some(handle.command_rx)
+    } else {
+        info!("D-Bus service listening disabled in configuration");
+        None
+    };
 
     loop {
         match shutdown_rx.try_recv() {
@@ -80,44 +80,74 @@ fn main() -> Result<()> {
         if let Some(rx) = dbus_rx.as_ref() {
             match rx.try_recv() {
                 Ok(command) => match command {
-                    PerformanceModeCommand::Enable => governor.apply_enable_command(),
-                    PerformanceModeCommand::Disable => governor.apply_disable_command(),
-                    PerformanceModeCommand::SetFixedFrequency(frequency) => {
-                        governor.apply_fixed_frequency_command(frequency)
+                    PerformanceModeCommand::Enable => governor
+                        .lock()
+                        .expect("governor lock poisoned")
+                        .apply_enable_performance_mode_command(true),
+                    PerformanceModeCommand::Disable => governor
+                        .lock()
+                        .expect("governor lock poisoned")
+                        .apply_enable_performance_mode_command(false),
+                    PerformanceModeCommand::SetFixedFrequency(frequency) => governor
+                        .lock()
+                        .expect("governor lock poisoned")
+                        .apply_fixed_frequency_command(frequency),
+                    PerformanceModeCommand::SetParameters {
+                        min_freq,
+                        max_freq,
+                        load_min,
+                        load_max,
+                        throttling_temp,
+                        recovery_temp,
+                    } => {
+                        let mut governor = governor.lock().expect("governor lock poisoned");
+                        governor.apply_range_command(min_freq, max_freq);
+                        governor.apply_load_target_command(load_min, load_max)?;
+                        governor.apply_temperature_thresholds_command(
+                            throttling_temp.unwrap_or(0),
+                            recovery_temp.unwrap_or(0),
+                        )?;
                     }
-                    PerformanceModeCommand::SetRange(min, max) => {
-                        governor.apply_range_command(min, max)
-                    }
-                    PerformanceModeCommand::SetLoadTarget(min, max) => {
-                        governor.apply_load_target_command(min, max)?
-                    }
+                    PerformanceModeCommand::SetRange(min, max) => governor
+                        .lock()
+                        .expect("governor lock poisoned")
+                        .apply_range_command(min, max),
+                    PerformanceModeCommand::SetLoadTarget(min, max) => governor
+                        .lock()
+                        .expect("governor lock poisoned")
+                        .apply_load_target_command(min, max)?,
                     PerformanceModeCommand::SetTemperatureThresholds(throttling, recovery) => {
-                        governor.apply_temperature_thresholds_command(throttling, recovery)?
+                        governor
+                            .lock()
+                            .expect("governor lock poisoned")
+                            .apply_temperature_thresholds_command(throttling, recovery)?
                     }
-                    PerformanceModeCommand::SetTestMode(frequency, voltage) => {
-                        governor.apply_test_mode_command(frequency, voltage)?
-                    }
+                    PerformanceModeCommand::SetTestMode(frequency, voltage) => governor
+                        .lock()
+                        .expect("governor lock poisoned")
+                        .apply_test_mode_command(frequency, voltage)?,
                 },
                 Err(TryRecvError::Empty) => {}
                 Err(TryRecvError::Disconnected) => dbus_channel_closed = true,
-            }
-
-            if let Some(enabled_state) = dbus_enabled_state.as_ref() {
-                enabled_state.store(governor.performance_mode_enabled(), Ordering::Relaxed);
             }
         }
 
         if dbus_channel_closed {
             warn!("D-Bus command channel closed; disabling D-Bus command handling");
             dbus_rx = None;
-            dbus_enabled_state = None;
         }
 
-        governor.run_iteration()?;
+        governor
+            .lock()
+            .expect("governor lock poisoned")
+            .run_iteration()?;
     }
 
     info!("Shutting down gracefully...");
-    governor.shutdown()?;
+    governor
+        .lock()
+        .expect("governor lock poisoned")
+        .shutdown()?;
     Ok(())
 }
 
