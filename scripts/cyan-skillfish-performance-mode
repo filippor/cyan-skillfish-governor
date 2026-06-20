@@ -4,6 +4,8 @@ set -euo pipefail
 SERVICE_NAME="com.cyanskillfish.Governor"
 OBJECT_PATH="/com/cyanskillfish/Governor"
 INTERFACE="com.cyanskillfish.Governor.PerformanceMode"
+RANGE_OBJECT_PATH_CURRENT="/com/cyanskillfish/Governor/Range/Current"
+RANGE_INTERFACE="com.cyanskillfish.Governor.Range"
 
 usage() {
     cat <<'EOF'
@@ -13,11 +15,11 @@ Options:
     --on                  Enable performance mode
     --fixed-frequency <MHz>
                           Enable performance mode with fixed frequency
-    --range <min> <max>   Set current range properties (MHz, use 0 for no limit)
+    --range <min> <max>   Set current range via SetRange (MHz, use 0 for no limit)
     --load-target <min> <max>
-                          Set load target bounds as writable properties
+                          Set load target bounds via SetLoadTarget
     --temperature <throttling> <recovery>
-                          Set temperature thresholds as writable properties
+                          Set temperature thresholds via SetTemperatureThresholds
     --off                 Disable performance mode
     --status              Show performance mode status
     -h, --help            Show this help message
@@ -104,19 +106,46 @@ call_set_fixed_frequency() {
 call_set_range() {
     local min="$1"
     local max="$2"
-    local current_min
-    local current_max
-
-    current_min=$(call_get_property CurrentRangeMin)
-    current_max=$(call_get_property CurrentRangeMax)
-
-    if awk -v desired="$max" -v current="$current_max" 'BEGIN { exit !(desired >= current) }'; then
-        call_set_property_u32 CurrentRangeMax "$max" || return 1
-        call_set_property_u32 CurrentRangeMin "$min" || return 1
-    else
-        call_set_property_u32 CurrentRangeMin "$min" || return 1
-        call_set_property_u32 CurrentRangeMax "$max" || return 1
+    if has_cmd busctl; then
+        busctl --system call "$SERVICE_NAME" "$OBJECT_PATH" "$INTERFACE" SetRange uu "$min" "$max" >/dev/null 2>&1
+        return $?
     fi
+
+    if has_cmd dbus-send; then
+        dbus-send --system \
+            --dest="$SERVICE_NAME" \
+            "$OBJECT_PATH" \
+            "$INTERFACE.SetRange" \
+            uint32:"$min" \
+            uint32:"$max" >/dev/null 2>&1
+        return $?
+    fi
+
+    echo "Error: neither busctl nor dbus-send is installed." >&2
+    return 1
+}
+
+call_get_current_range_property() {
+    local property_name="$1"
+
+    if has_cmd busctl; then
+        busctl --system get-property "$SERVICE_NAME" "$RANGE_OBJECT_PATH_CURRENT" "$RANGE_INTERFACE" "$property_name" | awk 'NR == 1 { print $NF }'
+        return $?
+    fi
+
+    if has_cmd dbus-send; then
+        dbus-send --system \
+            --print-reply \
+            --dest="$SERVICE_NAME" \
+            "$RANGE_OBJECT_PATH_CURRENT" \
+            org.freedesktop.DBus.Properties.Get \
+            string:"$RANGE_INTERFACE" \
+            string:"$property_name" | awk '/variant/ { print $3; exit }'
+        return $?
+    fi
+
+    echo "Error: neither busctl nor dbus-send is installed." >&2
+    return 1
 }
 
 call_get_property() {
@@ -166,6 +195,30 @@ call_set_property_u32() {
     return 1
 }
 
+call_set_current_range_property_u32() {
+    local property_name="$1"
+    local value="$2"
+
+    if has_cmd busctl; then
+        busctl --system set-property "$SERVICE_NAME" "$RANGE_OBJECT_PATH_CURRENT" "$RANGE_INTERFACE" "$property_name" u "$value" >/dev/null 2>&1
+        return $?
+    fi
+
+    if has_cmd dbus-send; then
+        dbus-send --system \
+            --dest="$SERVICE_NAME" \
+            "$RANGE_OBJECT_PATH_CURRENT" \
+            org.freedesktop.DBus.Properties.Set \
+            string:"$RANGE_INTERFACE" \
+            string:"$property_name" \
+            variant:uint32:"$value" >/dev/null 2>&1
+        return $?
+    fi
+
+    echo "Error: neither busctl nor dbus-send is installed." >&2
+    return 1
+}
+
 call_set_property_double() {
     local property_name="$1"
     local value="$2"
@@ -193,40 +246,45 @@ call_set_property_double() {
 call_set_load_target() {
     local min="$1"
     local max="$2"
-    local current_min
-    local current_max
-
-    current_min=$(call_get_property LoadTargetMin)
-    current_max=$(call_get_property LoadTargetMax)
-
-    if awk -v desired="$max" -v current="$current_max" 'BEGIN { exit !(desired >= current) }'; then
-        call_set_property_double LoadTargetMax "$max" || return 1
-        call_set_property_double LoadTargetMin "$min" || return 1
-    else
-        call_set_property_double LoadTargetMin "$min" || return 1
-        call_set_property_double LoadTargetMax "$max" || return 1
+    if has_cmd busctl; then
+        busctl --system call "$SERVICE_NAME" "$OBJECT_PATH" "$INTERFACE" SetLoadTarget dd "$min" "$max" >/dev/null 2>&1
+        return $?
     fi
+
+    if has_cmd dbus-send; then
+        dbus-send --system \
+            --dest="$SERVICE_NAME" \
+            "$OBJECT_PATH" \
+            "$INTERFACE.SetLoadTarget" \
+            double:"$min" \
+            double:"$max" >/dev/null 2>&1
+        return $?
+    fi
+
+    echo "Error: neither busctl nor dbus-send is installed." >&2
+    return 1
 }
 
 call_set_temperature() {
     local throttling="$1"
     local recovery="$2"
-    local current_throttling
-
-    current_throttling=$(call_get_property TemperatureThrottling)
-
-    if [ "$throttling" -eq 0 ] && [ "$recovery" -eq 0 ]; then
-        call_set_property_u32 TemperatureThrottling 0
+    if has_cmd busctl; then
+        busctl --system call "$SERVICE_NAME" "$OBJECT_PATH" "$INTERFACE" SetTemperatureThresholds uu "$throttling" "$recovery" >/dev/null 2>&1
         return $?
     fi
 
-    if awk -v desired="$throttling" -v current="$current_throttling" 'BEGIN { exit !(desired >= current) }'; then
-        call_set_property_u32 TemperatureThrottling "$throttling" || return 1
-        call_set_property_u32 TemperatureRecovery "$recovery" || return 1
-    else
-        call_set_property_u32 TemperatureRecovery "$recovery" || return 1
-        call_set_property_u32 TemperatureThrottling "$throttling" || return 1
+    if has_cmd dbus-send; then
+        dbus-send --system \
+            --dest="$SERVICE_NAME" \
+            "$OBJECT_PATH" \
+            "$INTERFACE.SetTemperatureThresholds" \
+            uint32:"$throttling" \
+            uint32:"$recovery" >/dev/null 2>&1
+        return $?
     fi
+
+    echo "Error: neither busctl nor dbus-send is installed." >&2
+    return 1
 }
 
 call_status() {

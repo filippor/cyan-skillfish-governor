@@ -299,22 +299,40 @@ D-Bus service exposed when `dbus.enabled = true`:
 #### Methods
 
 - `SetFixedFrequency(frequency: u32)` — Set fixed frequency in MHz (enables performance mode)
+- `SetRange(min: u32, max: u32)` — Set runtime current frequency range (`0` keeps bound open)
+- `SetLoadTarget(min: f64, max: f64)` — Set runtime load target bounds
+- `SetTemperatureThresholds(throttling: u32, recovery: u32)` — Set runtime temperature thresholds (`0,0` disables both)
 
 #### Properties
 
 - `Enabled` (bool, read/write) — Get or set performance mode enabled state
 - `LoadTargetMin` / `LoadTargetMax` (f64, read/write) — Current load target bounds used by the governor; validate together and keep `min <= max`
-- `TemperatureThrottling` / `TemperatureRecovery` (u32, read/write) — Current temperature thresholds in Celsius; `0` clears both, and recovery must stay below throttling
-- `CurrentRangeMin` / `CurrentRangeMax` (u32, read/write) — Current requested frequency range in MHz; use `0` for an open bound and keep the pair valid
-- `AllowedRangeMin` / `AllowedRangeMax` (u32, read-only) — Hardware-supported frequency range in MHz
-- `InitialRangeMin` / `InitialRangeMax` (u32, read-only) — Startup frequency range in MHz
+- `TemperatureThrottling` / `TemperatureRecovery` (u32, read/write) — Current temperature thresholds in Celsius; `0` disables both, and recovery must stay below throttling
+
+### Range Interface
+
+**Interface**: `com.cyanskillfish.Governor.Range`
+
+Range values are exposed on dedicated child objects:
+
+- Current range object: `/com/cyanskillfish/Governor/Range/Current` (read/write)
+  - `min` (u32, read/write)
+  - `max` (u32, read/write)
+- Allowed range object: `/com/cyanskillfish/Governor/Range/Allowed` (read-only)
+  - `min` (u32, read-only)
+  - `max` (u32, read-only)
+- Initial range object: `/com/cyanskillfish/Governor/Range/Initial` (read-only)
+  - `min` (u32, read-only)
+  - `max` (u32, read-only)
+
+For current range, use `0` for an open bound and keep the pair valid (`min <= max` when both are non-zero).
+
 
 ### TestMode Interface
 
 **Interface**: `com.cyanskillfish.Governor.TestMode` (root-only, requires authorization)
 
-> **Security Note**: The TestMode interface is restricted to root access only to prevent denial-of-service attacks. Regular users cannot access this interface.
-
+> **Security Note**: The TestMode interface is restricted to root access only 
 #### Methods
 
 - `SetTestMode(frequency: u32, voltage: u32)` — Set specific frequency and voltage and disable automatic adjustment. Thermal throttling remains active.
@@ -325,12 +343,11 @@ D-Bus service exposed when `dbus.enabled = true`:
 # Performance Mode operations (available to all authenticated users)
 busctl --system set-property com.cyanskillfish.Governor /com/cyanskillfish/Governor com.cyanskillfish.Governor.PerformanceMode Enabled b true
 busctl --system call com.cyanskillfish.Governor /com/cyanskillfish/Governor com.cyanskillfish.Governor.PerformanceMode SetFixedFrequency u 1200
-busctl --system set-property com.cyanskillfish.Governor /com/cyanskillfish/Governor com.cyanskillfish.Governor.PerformanceMode CurrentRangeMin u 500
-busctl --system set-property com.cyanskillfish.Governor /com/cyanskillfish/Governor com.cyanskillfish.Governor.PerformanceMode CurrentRangeMax u 1500
-busctl --system set-property com.cyanskillfish.Governor /com/cyanskillfish/Governor com.cyanskillfish.Governor.PerformanceMode LoadTargetMin d 0.80
-busctl --system set-property com.cyanskillfish.Governor /com/cyanskillfish/Governor com.cyanskillfish.Governor.PerformanceMode LoadTargetMax d 0.95
-busctl --system set-property com.cyanskillfish.Governor /com/cyanskillfish/Governor com.cyanskillfish.Governor.PerformanceMode TemperatureThrottling u 85
-busctl --system set-property com.cyanskillfish.Governor /com/cyanskillfish/Governor com.cyanskillfish.Governor.PerformanceMode TemperatureRecovery u 80
+busctl --system call com.cyanskillfish.Governor /com/cyanskillfish/Governor com.cyanskillfish.Governor.PerformanceMode SetRange uu 500 1500
+busctl --system call com.cyanskillfish.Governor /com/cyanskillfish/Governor com.cyanskillfish.Governor.PerformanceMode SetLoadTarget dd 0.80 0.95
+busctl --system call com.cyanskillfish.Governor /com/cyanskillfish/Governor com.cyanskillfish.Governor.PerformanceMode SetTemperatureThresholds uu 85 80
+busctl --system get-property com.cyanskillfish.Governor /com/cyanskillfish/Governor/Range/Allowed com.cyanskillfish.Governor.Range min
+busctl --system get-property com.cyanskillfish.Governor /com/cyanskillfish/Governor/Range/Allowed com.cyanskillfish.Governor.Range max
 busctl --system set-property com.cyanskillfish.Governor /com/cyanskillfish/Governor com.cyanskillfish.Governor.PerformanceMode Enabled b false
 
 # Test Mode operations (root-only)
