@@ -79,6 +79,13 @@ jobs:
         sha256sum "${PKG_NAME}.tar.gz" > "${PKG_NAME}.tar.gz.sha256"
 
         echo "PKG_NAME=${PKG_NAME}" >> $GITHUB_ENV
+    
+    - name: Create Debian package
+      run: |
+        cargo install cargo-deb
+        cargo deb --output target/debian
+        echo "DEB_PACKAGE=$(ls target/debian/*.deb)" >> $GITHUB_ENV
+
 
     - name: Generate changelog
       id: changelog
@@ -104,6 +111,7 @@ jobs:
         files: |
           ${{ env.PKG_NAME }}.tar.gz
           ${{ env.PKG_NAME }}.tar.gz.sha256
+          ${{ env.DEB_PACKAGE }}
         draft: false
         prerelease: false
         generate_release_notes: true
