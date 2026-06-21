@@ -51,6 +51,11 @@ jobs:
         echo "VERSION=${VERSION}" >> $GITHUB_ENV
         echo "version=${VERSION}" >> $GITHUB_OUTPUT
 
+    - name: Set package version
+      run: |
+        VERSION="${{ env.VERSION }}"
+        sed -i "0,/^version = /s/^version = .*/version = \"${VERSION#v}\"/" Cargo.toml
+
     - name: Create release package
       run: |
         VERSION="${{ env.VERSION }}"
