@@ -22,7 +22,7 @@ maintainer-scripts = "debian/scripts"
 depends = "libdrm2, libdrm-amdgpu1"
 assets = [
     ["target/release/cyan-skillfish-governor-smu", "usr/bin/", "755"],
-    { source = "com.cyan.SkillFishGovernor.conf", dest = "etc/dbus-1/system.d/com.cyanskillfish.Governor.conf"},
+    { source = "com.cyanskillfish.Governor.conf", dest = "etc/dbus-1/system.d/com.cyanskillfish.Governor.conf"},
     { source = "default-config.toml", dest = "etc/cyan-skillfish-governor-smu/config.toml", mode = "644"}
 ]
 systemd-units = [
