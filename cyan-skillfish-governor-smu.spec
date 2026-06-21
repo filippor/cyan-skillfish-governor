@@ -76,7 +76,7 @@ mkdir -p %{buildroot}/usr/lib/systemd/system-preset/
 %doc README.md
 %{_bindir}/%name
 %{_bindir}/cyan-skillfish-performance-mode
-%{_sysconfdir}/%name/config.toml
+%config(noreplace) %{_sysconfdir}/%name/config.toml
 %{_unitdir}/%name.service
 %{_datadir}/dbus-1/system.d/com.cyanskillfish.Governor.conf
 #/usr/lib/systemd/system-preset/50-#name.preset
