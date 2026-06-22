@@ -71,37 +71,39 @@ impl Governor {
         }
 
         let temp = self.update_max_freq_for_temperature()?;
-        if !self.test_mode {
-            let (next_target, next_status, should_apply_change) = compute_frequency_decision(
+        if self.test_mode {
+            return Ok(());
+        }
+        let (next_target, next_status, should_apply_change) = compute_frequency_decision(
+            self.curr_freq,
+            self.target_freq,
+            self.status,
+            self.max_freq,
+            *self.requested_range.start(),
+            self.performance_mode,
+            average_load,
+            burst_length,
+            &self.params,
+        );
+        self.target_freq = next_target;
+        self.status = next_status;
+
+        if should_apply_change {
+            debug!(
+                "freq curr {} target {} temp {} load {:.2} status {}  burst_length {}, performance_mode {}",
                 self.curr_freq,
                 self.target_freq,
-                self.status,
-                self.max_freq,
-                *self.requested_range.start(),
-                self.performance_mode,
+                temp,
                 average_load,
+                self.status,
                 burst_length,
-                &self.params,
+                self.performance_mode
             );
-            self.target_freq = next_target;
-            self.status = next_status;
-
-            if should_apply_change {
-                debug!(
-                    "freq curr {} target {} temp {} load {:.2} status {}  burst_length {}, performance_mode {}",
-                    self.curr_freq,
-                    self.target_freq,
-                    temp,
-                    average_load,
-                    self.status,
-                    burst_length,
-                    self.performance_mode
-                );
-                self.gpu.change_freq(self.target_freq)?;
-                self.status = 0;
-                self.curr_freq = self.target_freq;
-            }
+            self.gpu.change_freq(self.target_freq)?;
+            self.status = 0;
+            self.curr_freq = self.target_freq;
         }
+
         self.target_cycle_interval = if self.performance_mode {
             self.params
                 .adjustment_interval
@@ -286,8 +288,8 @@ impl Governor {
         throttling: u32,
         recovery: u32,
     ) -> Result<()> {
-        // Validate all inputs first
-        if throttling != 0 && !(1..=100).contains(&throttling) {
+        // Validate all inputs
+        if throttling != 0 && !(1..=95).contains(&throttling) {
             return Err(
                 "temperature throttling must be between 1 and 95 Celsius, or 0 to ignore".into(),
             );
@@ -303,12 +305,13 @@ impl Governor {
             return Err(
                 "temperature recovery must be lower than throttling, or 0 to ignore".into(),
             );
+        } else {
         }
 
         // Only modify after all validations pass
 
         if throttling != 0 {
-            self.params.temperature.throttling_temp = Some(throttling);
+            self.params.temperature.throttling_temp = effective_throttling;
         }
         if recovery != 0 {
             self.params.temperature.throttling_recovery_temp = Some(recovery);
@@ -388,7 +391,7 @@ impl Governor {
         let temp = self.gpu.read_temperature()?;
         if let Some(max_temp) = self.params.temperature.throttling_temp {
             let min_freq = *self.params.allowed_frequency_range.start();
-            if temp > max_temp && self.max_freq - self.params.significant_change > min_freq {
+            if temp > max_temp && self.max_freq > min_freq + self.params.significant_change {
                 self.max_freq -= self.params.significant_change;
                 debug!("throttling temp {temp} freq {}", self.max_freq);
             } else if let Some(recovery_temp) = self.params.temperature.throttling_recovery_temp

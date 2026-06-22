@@ -82,8 +82,14 @@ impl GPU {
 
         Ok(GPU {
             dev_handle: init_device_handle(location.get_drm_render_path()?)?,
-            min_freq: *safe_points.first_key_value().unwrap().0,
-            max_freq: *safe_points.last_key_value().unwrap().0,
+            min_freq: *safe_points
+                .first_key_value()
+                .ok_or_else(|| IoError::other("safe_points cannot be empty"))?
+                .0,
+            max_freq: *safe_points
+                .last_key_value()
+                .ok_or_else(|| IoError::other("safe_points cannot be empty"))?
+                .0,
             freq_strategy,
             usage_strategy,
             safe_points,

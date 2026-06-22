@@ -400,7 +400,7 @@ fn validate_safe_points(safe_points: &BTreeMap<u32, u32>) -> Result<()> {
         }
         highest_pair = pair;
     }
-    if highest_pair.1 > 10000 || highest_pair.1 > 10000 {
+    if highest_pair.1 > 10000 || highest_pair.0 > 10000 {
         Err(IoError::new(
             ErrorKind::InvalidInput,
             format!(
@@ -419,7 +419,7 @@ fn parse_temperature_config(config: &Table) -> TemperatureConfig {
         temperature,
         "throttling",
         "temperature.throttling",
-        0..=110,
+        0..=100,
         Some(85),
         None,
     )

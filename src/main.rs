@@ -4,7 +4,7 @@ mod dbus;
 mod governor;
 mod gpu;
 mod gpu_usage_fix;
-use app_error::Result;
+use app_error::{AppError, Result};
 use clap::Parser;
 use clap_verbosity_flag::{InfoLevel, Verbosity};
 use config::{Config, GovernorParams};
@@ -76,10 +76,13 @@ fn main() -> Result<()> {
 
         governor
             .lock()
-            .expect("governor lock poisoned")
+            .map_err(|_| AppError::from("governor lock poisoned"))?
             .run_iteration()?;
 
-        let target_cycle_interval = governor.lock().unwrap().target_cycle_interval();
+        let target_cycle_interval = governor
+            .lock()
+            .map_err(|_| AppError::from("governor lock poisoned"))?
+            .target_cycle_interval();
         let elapsed = loop_start.elapsed();
         if elapsed < target_cycle_interval {
             std::thread::sleep(target_cycle_interval - elapsed);
