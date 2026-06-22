@@ -138,16 +138,12 @@ fn voltage_for_freq(safe_points: &BTreeMap<u32, u32>, freq: u32) -> Result<u32> 
                 Some((prev_freq, prev_vol)) => {
                     let freq_span = next_freq - prev_freq;
                     let freq_offset = freq - prev_freq;
-
-                    if next_vol >= prev_vol {
-                        let vol_delta = next_vol - prev_vol;
-                        prev_vol + (vol_delta * freq_offset) / freq_span
-                    } else {
-                        let vol_delta = prev_vol - next_vol;
-                        prev_vol - (vol_delta * freq_offset) / freq_span
-                    }
+                    let vol_delta = next_vol  - prev_vol ;
+                    prev_vol  + (vol_delta * freq_offset ) / freq_span 
                 }
-                None => return  Err(IoError::other("tried to set a frequency below min safe point").into()),
+                None => {
+                    return Err(IoError::other("tried to set a frequency below min safe point").into())
+                }
             };
 
             return Ok(vol);

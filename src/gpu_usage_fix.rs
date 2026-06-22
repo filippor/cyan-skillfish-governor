@@ -1,13 +1,15 @@
 use log::{debug, trace};
 use std::{
-    fs::{self, File, OpenOptions},
+    fs::{self, File, OpenOptions, Permissions},
     io::{self, Read, Seek, SeekFrom, Write},
+    os::unix::fs::PermissionsExt,
     path::PathBuf,
     process::{Command, Stdio},
 };
 
 const METRICS_FNAME: &str = "gpu_metrics";
 const PATCHED_METRICS_PATH: &str = "/dev/shm/patched_gpu_metrics";
+const METRICS_FILE_PERMS: u32 = 0o644; // rw-r--r-- (readable by all, writable by owner)
 const USAGE_OFFSET: usize = 0x1C; // Byte 28
 
 pub struct GpuUsageFix {
@@ -20,7 +22,10 @@ impl GpuUsageFix {
     pub fn start(path: PathBuf) -> io::Result<Self> {
         debug!("Searching {} file at {path:?}", METRICS_FNAME);
         let real_metrics_path_buf = path.join(METRICS_FNAME);
-        let real_metrics_path = real_metrics_path_buf.as_path().to_str().unwrap();
+        let real_metrics_path = real_metrics_path_buf
+            .as_path()
+            .to_str()
+            .ok_or_else(|| io::Error::other("metrics path contains invalid UTF-8"))?;
 
         trace!("Unmounting stale bind: {real_metrics_path}");
         let _ = umount_bind(&real_metrics_path);
@@ -34,11 +39,12 @@ impl GpuUsageFix {
         real_file.read(&mut raw)?;
 
         trace!("Creating patched metrics: {}", PATCHED_METRICS_PATH);
+        let _ = fs::remove_file(PATCHED_METRICS_PATH);
         let mut patched_file = OpenOptions::new()
-            .create(true)
-            .truncate(true)
+            .create_new(true)
             .write(true)
             .open(PATCHED_METRICS_PATH)?;
+        fs::set_permissions(PATCHED_METRICS_PATH, Permissions::from_mode(METRICS_FILE_PERMS))?;
         patched_file.write_all(&raw)?;
         patched_file.flush()?;
 

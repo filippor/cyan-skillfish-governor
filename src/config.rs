@@ -400,7 +400,15 @@ fn validate_safe_points(safe_points: &BTreeMap<u32, u32>) -> Result<()> {
         }
         highest_pair = pair;
     }
-
+    if highest_pair.1 > 10000 || highest_pair.1 > 10000 {
+        Err(IoError::new(
+            ErrorKind::InvalidInput,
+            format!(
+                "safe point with frequency {} MHz and voltage {} mV is unrealistic",
+                highest_pair.1, highest_pair.0,
+            ),
+        ))?;
+    }
     Ok(())
 }
 
