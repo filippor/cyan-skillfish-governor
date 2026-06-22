@@ -1,5 +1,5 @@
 use crate::app_error::Result;
-use crate::config::{GovernorParams, TemperatureConfig};
+use crate::config::GovernorParams;
 use crate::gpu::GPU;
 use crate::gpu_usage_fix::GpuUsageFix;
 use log::{debug, error, info};
@@ -54,7 +54,6 @@ impl Governor {
     }
 
     pub fn run_iteration(&mut self) -> Result<()> {
-
         let (average_load, burst_length) = if !self.performance_mode || self.gpu_usage_fix.is_some()
         {
             self.gpu.poll_and_get_load()?
@@ -111,8 +110,6 @@ impl Governor {
         } else {
             self.params.adjustment_interval
         };
-
-        
 
         Ok(())
     }
@@ -172,14 +169,7 @@ impl Governor {
     ) -> Result<()> {
         self.apply_range_command(min_freq, max_freq)?;
         self.apply_load_target_command(load_min, load_max)?;
-        self.apply_temperature_thresholds_command(
-            if throttling_temp > 0 {
-                throttling_temp
-            } else {
-                0
-            },
-            if recovery_temp > 0 { recovery_temp } else { 0 },
-        )?;
+        self.apply_temperature_thresholds_command(throttling_temp, recovery_temp)?;
 
         Ok(())
     }
@@ -296,36 +286,44 @@ impl Governor {
         throttling: u32,
         recovery: u32,
     ) -> Result<()> {
-        if throttling == 0 && recovery == 0 {
-            self.params.temperature = TemperatureConfig {
-                throttling_temp: None,
-                throttling_recovery_temp: None,
-            };
-            info!("Temperature throttling disabled at runtime");
-            return Ok(());
-        }
-
-        if !(1..=110).contains(&throttling) {
+        // Validate all inputs first
+        if throttling != 0 && !(1..=100).contains(&throttling) {
             return Err(
-                "temperature throttling must be between 1 and 110 Celsius, or 0 to disable".into(),
+                "temperature throttling must be between 1 and 95 Celsius, or 0 to ignore".into(),
             );
         }
-        if recovery == 0 || recovery >= throttling {
-            return Err(
-                "temperature recovery must be greater than 0 and lower than throttling".into(),
-            );
-        }
-
-        self.params.temperature = TemperatureConfig {
-            throttling_temp: Some(throttling),
-            throttling_recovery_temp: Some(recovery),
+        // Determine the effective throttling temperature for validation
+        let effective_throttling = if throttling != 0 {
+            Some(throttling)
+        } else {
+            self.params.temperature.throttling_temp
         };
+
+        if recovery != 0 && recovery > effective_throttling.unwrap_or(0) {
+            return Err(
+                "temperature recovery must be lower than throttling, or 0 to ignore".into(),
+            );
+        }
+
+        // Only modify after all validations pass
+
+        if throttling != 0 {
+            self.params.temperature.throttling_temp = Some(throttling);
+        }
+        if recovery != 0 {
+            self.params.temperature.throttling_recovery_temp = Some(recovery);
+        }
+
         if self.max_freq > *self.requested_range.end() {
             self.max_freq = *self.requested_range.end();
         }
         info!(
             "Temperature thresholds updated at runtime: throttling={}C, recovery={}C",
-            throttling, recovery
+            self.params.temperature.throttling_temp.unwrap_or(0),
+            self.params
+                .temperature
+                .throttling_recovery_temp
+                .unwrap_or(0)
         );
         Ok(())
     }
@@ -371,7 +369,7 @@ impl Governor {
             *self.params.allowed_frequency_range.end(),
         )
     }
-    
+
     pub fn load_target(&self) -> (f64, f64) {
         (
             f64::from(self.params.down_thresh),
@@ -385,7 +383,6 @@ impl Governor {
             self.params.temperature.throttling_recovery_temp,
         )
     }
-
 
     fn update_max_freq_for_temperature(&mut self) -> Result<u32> {
         let temp = self.gpu.read_temperature()?;

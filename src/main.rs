@@ -69,7 +69,7 @@ fn main() -> Result<()> {
 
     loop {
         let loop_start = Instant::now();
-        
+
         if shutdown_rx.try_recv().is_ok() {
             break;
         }

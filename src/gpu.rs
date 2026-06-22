@@ -138,11 +138,13 @@ fn voltage_for_freq(safe_points: &BTreeMap<u32, u32>, freq: u32) -> Result<u32> 
                 Some((prev_freq, prev_vol)) => {
                     let freq_span = next_freq - prev_freq;
                     let freq_offset = freq - prev_freq;
-                    let vol_delta = next_vol  - prev_vol ;
-                    prev_vol  + (vol_delta * freq_offset ) / freq_span 
+                    let vol_delta = next_vol - prev_vol;
+                    prev_vol + (vol_delta * freq_offset) / freq_span
                 }
                 None => {
-                    return Err(IoError::other("tried to set a frequency below min safe point").into())
+                    return Err(
+                        IoError::other("tried to set a frequency below min safe point").into(),
+                    );
                 }
             };
 
@@ -260,24 +262,23 @@ mod tests {
 
     #[test]
     fn voltage_for_freq_interpolates_between_safe_points() {
-        let safe_points = BTreeMap::from([(800, 700),(950, 850), (1000, 900)]);
+        let safe_points = BTreeMap::from([(800, 700), (950, 850), (1000, 900)]);
 
         assert_eq!(voltage_for_freq(&safe_points, 900).unwrap(), 800);
     }
-     #[test]
+    #[test]
     fn voltage_for_freq_use_safe_points() {
-        let safe_points = BTreeMap::from([(800, 700),(950, 850), (1000, 900)]);
+        let safe_points = BTreeMap::from([(800, 700), (950, 850), (1000, 900)]);
 
         assert_eq!(voltage_for_freq(&safe_points, 950).unwrap(), 850);
     }
 
-      #[test]
+    #[test]
     fn voltage_for_freq_rejects_frequency_below_min_safe_point() {
-        let safe_points = BTreeMap::from([(800, 700),(950, 850), (1000, 900)]);
+        let safe_points = BTreeMap::from([(800, 700), (950, 850), (1000, 900)]);
 
         assert!(voltage_for_freq(&safe_points, 750).is_err());
     }
-
 
     #[test]
     fn voltage_for_freq_rejects_frequency_above_max_safe_point() {

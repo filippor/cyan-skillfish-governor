@@ -107,29 +107,54 @@ impl PerformanceModeIface {
 
     #[zbus(property)]
     fn set_load_target_min(&self, value: f64) -> zbus::Result<()> {
-        let current_max = self.state.lock().expect("D-Bus state lock poisoned").load_target().1;
-        self.set_load_target(value, current_max).map_err(|err| zbus::Error::FDO(Box::new(err)))
+        let current_max = self
+            .state
+            .lock()
+            .expect("D-Bus state lock poisoned")
+            .load_target()
+            .1;
+        self.set_load_target(value, current_max)
+            .map_err(|err| zbus::Error::FDO(Box::new(err)))
     }
 
     #[zbus(property)]
     fn load_target_min(&self) -> f64 {
-        self.state.lock().expect("D-Bus state lock poisoned").load_target().0
+        self.state
+            .lock()
+            .expect("D-Bus state lock poisoned")
+            .load_target()
+            .0
     }
 
     #[zbus(property)]
     fn set_load_target_max(&self, value: f64) -> zbus::Result<()> {
-        let current_min = self.state.lock().expect("D-Bus state lock poisoned").load_target().0;
-        self.set_load_target(current_min, value).map_err(|err| zbus::Error::FDO(Box::new(err)))
+        let current_min = self
+            .state
+            .lock()
+            .expect("D-Bus state lock poisoned")
+            .load_target()
+            .0;
+        self.set_load_target(current_min, value)
+            .map_err(|err| zbus::Error::FDO(Box::new(err)))
     }
 
     #[zbus(property)]
     fn load_target_max(&self) -> f64 {
-        self.state.lock().expect("D-Bus state lock poisoned").load_target().1
+        self.state
+            .lock()
+            .expect("D-Bus state lock poisoned")
+            .load_target()
+            .1
     }
 
     #[zbus(property)]
     fn set_temperature_throttling(&self, value: u32) -> zbus::Result<()> {
-        let current_recovery = self.state.lock().expect("D-Bus state lock poisoned").temperature_thresholds().1;
+        let current_recovery = self
+            .state
+            .lock()
+            .expect("D-Bus state lock poisoned")
+            .temperature_thresholds()
+            .1;
 
         let mut gov = self.state.lock().map_err(|_| {
             zbus::Error::FDO(Box::new(fdo::Error::Failed("state lock poisoned".into())))
@@ -141,12 +166,22 @@ impl PerformanceModeIface {
 
     #[zbus(property)]
     fn temperature_throttling(&self) -> u32 {
-        self.state.lock().expect("D-Bus state lock poisoned").temperature_thresholds().0.unwrap_or(0)
+        self.state
+            .lock()
+            .expect("D-Bus state lock poisoned")
+            .temperature_thresholds()
+            .0
+            .unwrap_or(0)
     }
 
     #[zbus(property)]
     fn set_temperature_recovery(&self, value: u32) -> zbus::Result<()> {
-        let current_throttling = self.state.lock().expect("D-Bus state lock poisoned").temperature_thresholds().0;
+        let current_throttling = self
+            .state
+            .lock()
+            .expect("D-Bus state lock poisoned")
+            .temperature_thresholds()
+            .0;
 
         let mut gov = self.state.lock().map_err(|_| {
             zbus::Error::FDO(Box::new(fdo::Error::Failed("state lock poisoned".into())))
@@ -157,12 +192,20 @@ impl PerformanceModeIface {
 
     #[zbus(property)]
     fn temperature_recovery(&self) -> u32 {
-        self.state.lock().expect("D-Bus state lock poisoned").temperature_thresholds().1.unwrap_or(0)
+        self.state
+            .lock()
+            .expect("D-Bus state lock poisoned")
+            .temperature_thresholds()
+            .1
+            .unwrap_or(0)
     }
 
     #[zbus(property)]
     fn enabled(&self) -> bool {
-        self.state.lock().expect("D-Bus state lock poisoned").performance_mode_enabled()
+        self.state
+            .lock()
+            .expect("D-Bus state lock poisoned")
+            .performance_mode_enabled()
     }
 
     #[zbus(property)]
@@ -201,9 +244,8 @@ impl CurrentRangeIface {
         let mut gov = self.state.lock().map_err(|_| {
             zbus::Error::FDO(Box::new(fdo::Error::Failed("state lock poisoned".into())))
         })?;
-        gov.apply_range_command(value, current_max).map_err(|err| {
-            zbus::Error::FDO(Box::new(fdo::Error::InvalidArgs(err.to_string())))
-        })?;
+        gov.apply_range_command(value, current_max)
+            .map_err(|err| zbus::Error::FDO(Box::new(fdo::Error::InvalidArgs(err.to_string()))))?;
         Ok(())
     }
 
@@ -218,9 +260,8 @@ impl CurrentRangeIface {
         let mut gov = self.state.lock().map_err(|_| {
             zbus::Error::FDO(Box::new(fdo::Error::Failed("state lock poisoned".into())))
         })?;
-        gov.apply_range_command(current_min, value).map_err(|err| {
-            zbus::Error::FDO(Box::new(fdo::Error::InvalidArgs(err.to_string())))
-        })?;
+        gov.apply_range_command(current_min, value)
+            .map_err(|err| zbus::Error::FDO(Box::new(fdo::Error::InvalidArgs(err.to_string()))))?;
         Ok(())
     }
 }
@@ -244,8 +285,6 @@ impl ReadOnlyRangeIface {
     }
 }
 
-
-
 impl CurrentRangeIface {
     fn with_state<R>(&self, f: impl FnOnce(&Governor) -> R) -> R {
         let state = self.state.lock().expect("D-Bus state lock poisoned");
@@ -259,8 +298,6 @@ impl ReadOnlyRangeIface {
         f(&state)
     }
 }
-
-
 
 /// D-Bus service handler
 pub struct DbusService;

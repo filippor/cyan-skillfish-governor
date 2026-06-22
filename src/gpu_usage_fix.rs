@@ -44,7 +44,10 @@ impl GpuUsageFix {
             .create_new(true)
             .write(true)
             .open(PATCHED_METRICS_PATH)?;
-        fs::set_permissions(PATCHED_METRICS_PATH, Permissions::from_mode(METRICS_FILE_PERMS))?;
+        fs::set_permissions(
+            PATCHED_METRICS_PATH,
+            Permissions::from_mode(METRICS_FILE_PERMS),
+        )?;
         patched_file.write_all(&raw)?;
         patched_file.flush()?;
 
