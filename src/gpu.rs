@@ -108,15 +108,7 @@ impl GPU {
     }
 
     pub fn change_freq(&mut self, freq: u32) -> Result<()> {
-        let vol = self
-            .safe_points
-            .range(freq..)
-            .next()
-            .map(|(_, voltage)| *voltage)
-            .ok_or(IoError::other(
-                "tried to set a frequency beyond max safe point",
-            ))?;
-
+        let vol = voltage_for_freq(&self.safe_points, freq)?;
         self.freq_strategy.change_freq(freq, vol)
     }
 
@@ -131,6 +123,40 @@ impl GPU {
     pub fn shutdown(&mut self) -> Result<()> {
         self.freq_strategy.shutdown()
     }
+}
+
+fn voltage_for_freq(safe_points: &BTreeMap<u32, u32>, freq: u32) -> Result<u32> {
+    let mut prev_point: Option<(u32, u32)> = None;
+
+    for (&next_freq, &next_vol) in safe_points {
+        if next_freq == freq {
+            return Ok(next_vol);
+        }
+
+        if next_freq > freq {
+            let vol = match prev_point {
+                Some((prev_freq, prev_vol)) => {
+                    let freq_span = next_freq - prev_freq;
+                    let freq_offset = freq - prev_freq;
+
+                    if next_vol >= prev_vol {
+                        let vol_delta = next_vol - prev_vol;
+                        prev_vol + (vol_delta * freq_offset) / freq_span
+                    } else {
+                        let vol_delta = prev_vol - next_vol;
+                        prev_vol - (vol_delta * freq_offset) / freq_span
+                    }
+                }
+                None => return  Err(IoError::other("tried to set a frequency below min safe point").into()),
+            };
+
+            return Ok(vol);
+        }
+
+        prev_point = Some((next_freq, next_vol));
+    }
+
+    Err(IoError::other("tried to set a frequency beyond max safe point").into())
 }
 
 const EXPECTED_VENDOR_ID: &str = "0x1002";
@@ -228,5 +254,39 @@ impl UsageStrategy for BusyFlagUsageStrategy {
         let average_load = (self.samples.count_ones() as f32) / 64.0;
         let burst_length = (!self.samples).trailing_zeros();
         Ok((average_load, burst_length))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::voltage_for_freq;
+    use std::collections::BTreeMap;
+
+    #[test]
+    fn voltage_for_freq_interpolates_between_safe_points() {
+        let safe_points = BTreeMap::from([(800, 700),(950, 850), (1000, 900)]);
+
+        assert_eq!(voltage_for_freq(&safe_points, 900).unwrap(), 800);
+    }
+     #[test]
+    fn voltage_for_freq_use_safe_points() {
+        let safe_points = BTreeMap::from([(800, 700),(950, 850), (1000, 900)]);
+
+        assert_eq!(voltage_for_freq(&safe_points, 950).unwrap(), 850);
+    }
+
+      #[test]
+    fn voltage_for_freq_rejects_frequency_below_min_safe_point() {
+        let safe_points = BTreeMap::from([(800, 700),(950, 850), (1000, 900)]);
+
+        assert!(voltage_for_freq(&safe_points, 750).is_err());
+    }
+
+
+    #[test]
+    fn voltage_for_freq_rejects_frequency_above_max_safe_point() {
+        let safe_points = BTreeMap::from([(800, 700), (1000, 900)]);
+
+        assert!(voltage_for_freq(&safe_points, 1100).is_err());
     }
 }
