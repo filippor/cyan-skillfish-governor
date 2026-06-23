@@ -309,9 +309,16 @@ D-Bus service exposed when `dbus.enabled = true`:
 - **Service**: `com.cyanskillfish.Governor`
 - **Object**: `/com/cyanskillfish/Governor`
 
+Compatibility aliases are also exposed for older clients:
+
+- **Service**: `com.cyan.SkillFishGovernor`
+- **Object**: `/com/cyan/SkillFishGovernor`
+
 ### PerformanceMode Interface
 
 **Interface**: `com.cyanskillfish.Governor.PerformanceMode` (available to all authenticated users)
+
+Compatibility alias: `com.cyan.SkillFishGovernor.PerformanceMode`
 
 #### Methods
 

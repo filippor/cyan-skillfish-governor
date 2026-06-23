@@ -7,8 +7,11 @@ use zbus::blocking::connection::Builder as ConnectionBuilder;
 use zbus::fdo;
 
 const SERVICE_NAME: &str = "com.cyanskillfish.Governor";
+const LEGACY_SERVICE_NAME: &str = "com.cyan.SkillFishGovernor";
 const OBJECT_PATH: &str = "/com/cyanskillfish/Governor";
+const LEGACY_OBJECT_PATH: &str = "/com/cyan/SkillFishGovernor";
 const INTERFACE_NAME: &str = "com.cyanskillfish.Governor.PerformanceMode";
+const LEGACY_INTERFACE_NAME: &str = "com.cyan.SkillFishGovernor.PerformanceMode";
 const TEST_MODE_INTERFACE_NAME: &str = "com.cyanskillfish.Governor.TestMode";
 const RANGE_INTERFACE_NAME: &str = "com.cyanskillfish.Governor.Range";
 const CURRENT_RANGE_OBJECT_PATH: &str = "/com/cyanskillfish/Governor/Range/Current";
@@ -16,6 +19,10 @@ const ALLOWED_RANGE_OBJECT_PATH: &str = "/com/cyanskillfish/Governor/Range/Allow
 const INITIAL_RANGE_OBJECT_PATH: &str = "/com/cyanskillfish/Governor/Range/Initial";
 
 struct PerformanceModeIface {
+    state: Arc<Mutex<Governor>>,
+}
+
+struct LegacyPerformanceModeIface {
     state: Arc<Mutex<Governor>>,
 }
 
@@ -196,6 +203,19 @@ impl PerformanceModeIface {
     }
 }
 
+#[zbus::interface(name = "com.cyan.SkillFishGovernor.PerformanceMode")]
+impl LegacyPerformanceModeIface {
+    fn set_range(&self, min: u32, max: u32) -> fdo::Result<()> {
+        let mut gov = self
+            .state
+            .lock()
+            .map_err(|_| fdo::Error::Failed("state lock poisoned".into()))?;
+        gov.apply_range_command(min, max)
+            .map_err(|err| fdo::Error::InvalidArgs(err.to_string()))?;
+        Ok(())
+    }
+}
+
 #[zbus::interface(name = "com.cyanskillfish.Governor.TestMode")]
 impl TestModeIface {
     fn set_test_mode(&self, frequency: u32, voltage: u32) -> fdo::Result<()> {
@@ -297,6 +317,9 @@ impl DbusService {
         let perf_iface = PerformanceModeIface {
             state: state.clone(),
         };
+        let legacy_perf_iface = LegacyPerformanceModeIface {
+            state: state.clone(),
+        };
         let current_range_iface = CurrentRangeIface {
             state: state.clone(),
         };
@@ -316,9 +339,19 @@ impl DbusService {
             .map_err(|err| format!("failed to create D-Bus system connection: {err}"))?
             .name(SERVICE_NAME)
             .map_err(|err| format!("failed to request D-Bus name {SERVICE_NAME}: {err}"))?
+            .name(LEGACY_SERVICE_NAME)
+            .map_err(|err| {
+                format!("failed to request D-Bus name {LEGACY_SERVICE_NAME}: {err}")
+            })?
             .serve_at(OBJECT_PATH, perf_iface)
             .map_err(|err| {
                 format!("failed to export D-Bus object {OBJECT_PATH} ({INTERFACE_NAME}): {err}")
+            })?
+            .serve_at(LEGACY_OBJECT_PATH, legacy_perf_iface)
+            .map_err(|err| {
+                format!(
+                    "failed to export D-Bus object {LEGACY_OBJECT_PATH} ({LEGACY_INTERFACE_NAME}): {err}"
+                )
             })?
             .serve_at(CURRENT_RANGE_OBJECT_PATH, current_range_iface)
             .map_err(|err| {
@@ -348,6 +381,10 @@ impl DbusService {
         info!(
             "D-Bus performance mode service ready: {} {} {}",
             SERVICE_NAME, OBJECT_PATH, INTERFACE_NAME
+        );
+        info!(
+            "D-Bus legacy performance mode service ready: {} {} {}",
+            LEGACY_SERVICE_NAME, LEGACY_OBJECT_PATH, LEGACY_INTERFACE_NAME
         );
         info!(
             "D-Bus test mode service ready: {} {} {}",
