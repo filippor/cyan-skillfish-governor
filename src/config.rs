@@ -79,6 +79,7 @@ pub struct TemperatureConfig {
 
 pub struct GpuUsageConfig {
     pub fix_metrics: bool,
+    pub fix_freq: bool,
     pub flush_every: u32,
     pub method: GpuUsageMethod,
 }
@@ -475,6 +476,11 @@ fn parse_gpu_usage_config(config: &Table) -> GpuUsageConfig {
     )
     .unwrap() as u32;
 
+    let gpu_freq_fix = gpu_usage
+        .and_then(|t| t.get("fix-freq").or_else(|| t.get("fix_freq")))
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+
     let gpu_usage_method = match gpu_usage
         .and_then(|t| t.get("method"))
         .and_then(|v| v.as_str())
@@ -494,6 +500,7 @@ fn parse_gpu_usage_config(config: &Table) -> GpuUsageConfig {
 
     GpuUsageConfig {
         fix_metrics: gpu_metric_fix,
+        fix_freq: gpu_freq_fix,
         flush_every: gpu_metric_fix_flush_every,
         method: gpu_usage_method,
     }

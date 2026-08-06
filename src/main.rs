@@ -1,8 +1,10 @@
 mod app_error;
+mod bind_overlay;
 mod config;
 mod dbus;
 mod governor;
 mod gpu;
+mod gpu_frequency_fix;
 mod gpu_usage_fix;
 use app_error::{AppError, Result};
 use clap::Parser;
@@ -10,6 +12,7 @@ use clap_verbosity_flag::{InfoLevel, Verbosity};
 use config::{Config, GovernorParams};
 use governor::Governor;
 use gpu::GPU;
+use gpu_frequency_fix::GpuFrequencyFix;
 use gpu_usage_fix::GpuUsageFix;
 use log::info;
 use signal_hook::consts::signal::*;
@@ -57,8 +60,19 @@ fn main() -> Result<()> {
     } else {
         None
     };
+    let gpu_frequency_fix = if config.gpu_usage.fix_freq {
+        info!("GPU frequency fix enabled");
+        Some(GpuFrequencyFix::start(gpu.get_sysfs_path())?)
+    } else {
+        None
+    };
 
-    let governor = Arc::new(Mutex::new(Governor::new(params, gpu, gpu_usage_fix)?));
+    let governor = Arc::new(Mutex::new(Governor::new(
+        params,
+        gpu,
+        gpu_usage_fix,
+        gpu_frequency_fix,
+    )?));
 
     if config.dbus.enabled {
         info!("D-Bus service listening enabled");

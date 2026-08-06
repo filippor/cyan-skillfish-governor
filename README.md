@@ -197,6 +197,7 @@ Top-level keys:
 
 - `gpu-usage` (also accepts legacy `gpu_usage`)
   - `fix-metrics` (bool, default: `true`): enable GPU usage metrics patching.
+  - `fix-freq` (bool, default: `false`): patch the `current_gfxclk_frequency` field in `gpu_metrics` with the real value read from the SMU. Fixes incorrect frequency reporting on 8-core. Can be enabled independently of `fix-metrics`.
   - `method` (`"busy-flag"` , `"kernel"` or `"process"`, default: `"busy-flag"`): how load is sampled proces is more CPU intensive scan all process that use GPU, kernel require patched kernel.
   - `flush-every` (integer, default: `10`): flush patched metrics every N update cycles.
 

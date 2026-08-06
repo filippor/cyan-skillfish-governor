@@ -5,6 +5,7 @@ adjust = 100_000
 
 [gpu-usage]
 fix-metrics = true
+ fix-freq = false
 method = "busy-flag" # "busy-flag" , "process" or "kernel"
 flush-every = 10
 
