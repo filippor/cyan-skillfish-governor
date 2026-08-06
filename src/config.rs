@@ -13,6 +13,7 @@ use toml::Table;
 pub enum GpuUsageMethod {
     BusyFlag,
     Process,
+    Kernel,
 }
 
 impl GpuUsageMethod {
@@ -20,6 +21,7 @@ impl GpuUsageMethod {
         match self {
             Self::BusyFlag => "busy-flag",
             Self::Process => "process",
+            Self::Kernel => "kernel",
         }
     }
 }
@@ -479,6 +481,7 @@ fn parse_gpu_usage_config(config: &Table) -> GpuUsageConfig {
     {
         Some("busy-flag") => GpuUsageMethod::BusyFlag,
         Some("process") => GpuUsageMethod::Process,
+        Some("kernel") => GpuUsageMethod::Kernel,
         Some(other) => {
             warn!(
                 "gpu-usage.method '{}' is invalid, using default busy-flag",
