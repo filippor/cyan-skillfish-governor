@@ -197,7 +197,7 @@ Top-level keys:
 
 - `gpu-usage` (also accepts legacy `gpu_usage`)
   - `fix-metrics` (bool, default: `true`): enable GPU usage metrics patching.
-  - `method` (`"busy-flag"` or `"process"`, default: `"busy-flag"`): how load is sampled proces is more CPU intensive scan all process that use GPU.
+  - `method` (`"busy-flag"` , `"kernel"` or `"process"`, default: `"busy-flag"`): how load is sampled proces is more CPU intensive scan all process that use GPU, kernel require patched kernel.
   - `flush-every` (integer, default: `10`): flush patched metrics every N update cycles.
 
 - `gpu`

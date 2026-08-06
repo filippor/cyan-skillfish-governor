@@ -10,6 +10,9 @@ use std::{collections::BTreeMap, fs::File, io::Error as IoError, path::PathBuf, 
 #[path = "gpu/kernel_freq_strategy.rs"]
 mod kernel_freq_strategy;
 use kernel_freq_strategy::KernelFreqStrategy;
+#[path = "gpu/kernel_usage_strategy.rs"]
+mod kernel_usage_strategy;
+use kernel_usage_strategy::KernelUsageStrategy;
 #[path = "gpu/process_usage_strategy.rs"]
 mod process_usage_strategy;
 use process_usage_strategy::ProcessUsageStrategy;
@@ -78,6 +81,9 @@ impl GPU {
                 prev_gfx_time: None,
                 prev_time: None,
             }),
+            GpuUsageMethod::Kernel => {
+                Box::new(KernelUsageStrategy::new(location.get_drm_render_path()?)?)
+            }
         };
 
         Ok(GPU {
