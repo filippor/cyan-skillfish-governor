@@ -1,6 +1,7 @@
 use crate::app_error::Result;
 use crate::config::GovernorParams;
 use crate::gpu::GPU;
+use crate::gpu_frequency_fix::GpuFrequencyFix;
 use crate::gpu_usage_fix::GpuUsageFix;
 use log::{debug, error, info};
 use std::ops::RangeInclusive;
@@ -12,6 +13,7 @@ pub struct Governor {
     params: GovernorParams,
     gpu: GPU,
     gpu_usage_fix: Option<GpuUsageFix>,
+    gpu_frequency_fix: Option<GpuFrequencyFix>,
     curr_freq: u32,
     target_freq: u32,
     status: i16,
@@ -29,6 +31,7 @@ impl Governor {
         params: GovernorParams,
         gpu: GPU,
         gpu_usage_fix: Option<GpuUsageFix>,
+        gpu_frequency_fix: Option<GpuFrequencyFix>,
     ) -> Result<Self> {
         let curr_freq = gpu.get_freq()?;
         let target_freq = *params.allowed_frequency_range.start();
@@ -40,6 +43,7 @@ impl Governor {
             params,
             gpu,
             gpu_usage_fix,
+            gpu_frequency_fix,
             curr_freq,
             target_freq,
             status: 0,
@@ -61,11 +65,18 @@ impl Governor {
             (1.0, 0)
         };
 
-        if let Some(fix) = self.gpu_usage_fix.as_mut() {
+        if self.gpu_usage_fix.is_some() || self.gpu_frequency_fix.is_some() {
             self.usage_fix_cycle += 1;
             if self.performance_mode || self.usage_fix_cycle >= self.params.flush_every {
-                if let Err(err) = fix.set_usage_percent(average_load * 100.0) {
-                    error!("GPU usage metrics requested_rangefix write failed: {err}");
+                if let Some(fix) = self.gpu_usage_fix.as_mut()
+                    && let Err(err) = fix.set_usage_percent(average_load * 100.0)
+                {
+                    error!("GPU usage metrics fix write failed: {err}");
+                }
+                if let Some(fix) = self.gpu_frequency_fix.as_mut()
+                    && let Err(err) = fix.update()
+                {
+                    error!("GPU frequency fix write failed: {err}");
                 }
             }
         }
@@ -347,6 +358,11 @@ impl Governor {
             && let Err(err) = fix.shutdown()
         {
             error!("GPU usage metrics fix cleanup failed: {err}");
+        }
+        if let Some(fix) = self.gpu_frequency_fix.as_mut()
+            && let Err(err) = fix.shutdown()
+        {
+            error!("GPU frequency fix cleanup failed: {err}");
         }
         if let Err(err) = self.gpu.shutdown() {
             error!("System exit restore failed: {err}");
