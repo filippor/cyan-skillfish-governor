@@ -72,7 +72,12 @@ fn main() -> Result<()> {
         MemoryFabricProfile::new(
             profile.lower_utilization,
             profile.upper_utilization,
-            profile.bandwidth_scale_gib,
+            profile.capacities.map(|capacity| {
+                (
+                    capacity.bandwidth_scale_gib,
+                    capacity.core_bandwidth_scale_gib,
+                )
+            }),
         )
     });
 

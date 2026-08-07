@@ -14,7 +14,7 @@ set-method = "smu"  # "smu" or "kernel"
 
 # Profiles: 1 = ~450 MHz idle, 2 = ~850 MHz intermediate,
 # 3 = ~1750 MHz active/baseline.
-# Profile decisions use the greater of GPU usage and memory-bandwidth EWMA.
+# Profile decisions apply one EWMA to the greater of GPU usage and memory bandwidth.
 [memory-fabric-profile]
 # Experimental: queue 3 message 0x1E is not fully understood and has caused
 # hardware resets on BC-250 systems. Enable only for controlled testing.
@@ -22,7 +22,14 @@ enabled = true
 # A +/-0.05 utilization hysteresis reduces profile flapping.
 lower-utilization = 0.40
 upper-utilization = 0.80
-bandwidth-scale-gib = 1.0
+# Measured CPU DRAM-read capacities for each profile. Recalibrate these values
+# with the memory_profile_capacity example when hardware or firmware changes.
+profile-1-bandwidth-scale-gib = 4.0
+profile-1-core-bandwidth-scale-gib = 2.3
+profile-2-bandwidth-scale-gib = 12.4
+profile-2-core-bandwidth-scale-gib = 6.1
+profile-3-bandwidth-scale-gib = 18.1
+profile-3-core-bandwidth-scale-gib = 4.4
 
 [dbus]
 enabled = true

@@ -101,7 +101,13 @@ pub struct FrequencyRangeConfig {
 pub struct MemoryFabricProfileConfig {
     pub lower_utilization: f64,
     pub upper_utilization: f64,
+    pub capacities: [MemoryFabricProfileCapacityConfig; 3],
+}
+
+#[derive(Clone, Copy)]
+pub struct MemoryFabricProfileCapacityConfig {
     pub bandwidth_scale_gib: f64,
+    pub core_bandwidth_scale_gib: f64,
 }
 
 pub struct GovernorParams {
@@ -606,20 +612,82 @@ fn parse_memory_fabric_profile_config(config: &Table) -> Option<MemoryFabricProf
     )
     .unwrap()
     .min(upper_utilization);
-    let bandwidth_scale_gib = parse_float_in_range_optional(
+    let legacy_bandwidth_scale_gib = parse_legacy_memory_fabric_scale(
         profile,
         "bandwidth-scale-gib",
         "memory-fabric-profile.bandwidth-scale-gib",
-        0.1..=1000.0,
-        Some(5.0),
-        Some(5.0),
-    )
-    .unwrap();
+    );
+    let legacy_core_bandwidth_scale_gib = parse_legacy_memory_fabric_scale(
+        profile,
+        "core-bandwidth-scale-gib",
+        "memory-fabric-profile.core-bandwidth-scale-gib",
+    );
+    let capacities = [
+        parse_memory_fabric_profile_capacity(
+            profile,
+            1,
+            legacy_bandwidth_scale_gib.unwrap_or(4.0),
+            legacy_core_bandwidth_scale_gib.unwrap_or(2.3),
+        ),
+        parse_memory_fabric_profile_capacity(
+            profile,
+            2,
+            legacy_bandwidth_scale_gib.unwrap_or(12.4),
+            legacy_core_bandwidth_scale_gib.unwrap_or(6.1),
+        ),
+        parse_memory_fabric_profile_capacity(
+            profile,
+            3,
+            legacy_bandwidth_scale_gib.unwrap_or(18.1),
+            legacy_core_bandwidth_scale_gib.unwrap_or(4.4),
+        ),
+    ];
     Some(MemoryFabricProfileConfig {
         lower_utilization,
         upper_utilization,
-        bandwidth_scale_gib,
+        capacities,
     })
+}
+
+fn parse_legacy_memory_fabric_scale(
+    profile: Option<&Table>,
+    key: &str,
+    config_key: &str,
+) -> Option<f64> {
+    profile.and_then(|table| table.get(key))?;
+    parse_float_in_range_optional(profile, key, config_key, 0.1..=1000.0, None, None)
+}
+
+fn parse_memory_fabric_profile_capacity(
+    profile: Option<&Table>,
+    profile_index: u32,
+    default_bandwidth: f64,
+    default_core_bandwidth: f64,
+) -> MemoryFabricProfileCapacityConfig {
+    let bandwidth_key = format!("profile-{profile_index}-bandwidth-scale-gib");
+    let core_bandwidth_key = format!("profile-{profile_index}-core-bandwidth-scale-gib");
+    let bandwidth_scale_gib = parse_float_in_range_optional(
+        profile,
+        &bandwidth_key,
+        &format!("memory-fabric-profile.{bandwidth_key}"),
+        0.1..=1000.0,
+        Some(default_bandwidth),
+        Some(default_bandwidth),
+    )
+    .unwrap();
+    let core_bandwidth_scale_gib = parse_float_in_range_optional(
+        profile,
+        &core_bandwidth_key,
+        &format!("memory-fabric-profile.{core_bandwidth_key}"),
+        0.1..=1000.0,
+        Some(default_core_bandwidth),
+        Some(default_core_bandwidth),
+    )
+    .unwrap();
+    MemoryFabricProfileCapacityConfig {
+        bandwidth_scale_gib,
+        core_bandwidth_scale_gib,
+    }
 }
 
 fn nested_table<'a>(table: Option<&'a Table>, key: &str) -> Option<&'a Table> {
@@ -767,14 +835,24 @@ mod tests {
             enabled = true
             lower-utilization = 0.55
             upper-utilization = 0.75
-            bandwidth-scale-gib = 6.5
+            profile-1-bandwidth-scale-gib = 4.1
+            profile-1-core-bandwidth-scale-gib = 2.4
+            profile-2-bandwidth-scale-gib = 12.5
+            profile-2-core-bandwidth-scale-gib = 6.2
+            profile-3-bandwidth-scale-gib = 18.2
+            profile-3-core-bandwidth-scale-gib = 4.5
             "#,
         );
         let profile = cfg.memory_fabric_profile.unwrap();
 
         assert_eq!(profile.lower_utilization, 0.55);
         assert_eq!(profile.upper_utilization, 0.75);
-        assert_eq!(profile.bandwidth_scale_gib, 6.5);
+        assert_eq!(profile.capacities[0].bandwidth_scale_gib, 4.1);
+        assert_eq!(profile.capacities[0].core_bandwidth_scale_gib, 2.4);
+        assert_eq!(profile.capacities[1].bandwidth_scale_gib, 12.5);
+        assert_eq!(profile.capacities[1].core_bandwidth_scale_gib, 6.2);
+        assert_eq!(profile.capacities[2].bandwidth_scale_gib, 18.2);
+        assert_eq!(profile.capacities[2].core_bandwidth_scale_gib, 4.5);
     }
 
     #[test]
@@ -789,7 +867,30 @@ mod tests {
 
         assert_eq!(profile.lower_utilization, 0.60);
         assert_eq!(profile.upper_utilization, 0.70);
-        assert_eq!(profile.bandwidth_scale_gib, 5.0);
+        assert_eq!(profile.capacities[0].bandwidth_scale_gib, 4.0);
+        assert_eq!(profile.capacities[0].core_bandwidth_scale_gib, 2.3);
+        assert_eq!(profile.capacities[1].bandwidth_scale_gib, 12.4);
+        assert_eq!(profile.capacities[1].core_bandwidth_scale_gib, 6.1);
+        assert_eq!(profile.capacities[2].bandwidth_scale_gib, 18.1);
+        assert_eq!(profile.capacities[2].core_bandwidth_scale_gib, 4.4);
+    }
+
+    #[test]
+    fn memory_fabric_profile_accepts_legacy_global_scales() {
+        let cfg = parse_config(
+            r#"
+            [memory-fabric-profile]
+            enabled = true
+            bandwidth-scale-gib = 6.5
+            core-bandwidth-scale-gib = 4.5
+            "#,
+        );
+        let profile = cfg.memory_fabric_profile.unwrap();
+
+        for capacity in profile.capacities {
+            assert_eq!(capacity.bandwidth_scale_gib, 6.5);
+            assert_eq!(capacity.core_bandwidth_scale_gib, 4.5);
+        }
     }
 
     #[test]

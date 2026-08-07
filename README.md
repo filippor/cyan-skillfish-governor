@@ -206,11 +206,14 @@ Top-level keys:
 
 - `memory-fabric-profile`
   - `enabled` (bool, default: `false`): select SMU performance profiles from GPU usage and CPU-originated DRAM bandwidth. CPU compute load is not used. Requires `gpu.set-method = "smu"`.
-      - `bandwidth-scale-gib` (GiB/s, default: `5.0`): DRAM bandwidth represented by utilization `1.0`.
+  - `profile-1-bandwidth-scale-gib` / `profile-1-core-bandwidth-scale-gib` (GiB/s, defaults: `4.0` / `2.3`): aggregate and maximum per-core DRAM bandwidth represented by utilization `1.0` while profile `1` is active.
+  - `profile-2-bandwidth-scale-gib` / `profile-2-core-bandwidth-scale-gib` (GiB/s, defaults: `12.4` / `6.1`): profile `2` capacities.
+  - `profile-3-bandwidth-scale-gib` / `profile-3-core-bandwidth-scale-gib` (GiB/s, defaults: `18.1` / `4.4`): profile `3` capacities. The non-monotonic per-core defaults reflect measured BC-250 behavior.
+  - Legacy `bandwidth-scale-gib` and `core-bandwidth-scale-gib` values remain accepted and apply one capacity pair to all profiles.
     - Experimental: the underlying SMU queue 3 message `0x1E` is not fully understood and may cause a hardware reset. It is disabled in the example configuration.
   - `lower-utilization` (fraction, default: `0.60`): boundary between profiles `1` and `2`.
   - `upper-utilization` (fraction, default: `0.70`): boundary between profiles `2` and `3`.
-  - Profile decisions use a time-aware exponentially weighted moving average (EWMA) with a 500 ms half-life, smoothly fading old GPU load while filtering short-lived spikes and dips.
+  - Profile decisions normalize bandwidth against the currently active profile's capacities, take the greatest of GPU usage, aggregate DRAM bandwidth, and maximum per-core DRAM bandwidth, then apply one time-aware EWMA with a 500 ms half-life.
   - A fixed utilization hysteresis of `0.05` prevents rapid profile changes near either threshold.
     - Profile `1`: approximately 450 MHz, deepest idle; reduces system power by roughly 20 W.
     - Profile `2`: approximately 850 MHz, intermediate.
