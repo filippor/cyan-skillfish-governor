@@ -145,15 +145,14 @@ fn run_control_loop(governor: &Arc<Mutex<Governor>>, shutdown_rx: &Receiver<()>)
             std::thread::sleep(target_cycle_interval - elapsed);
         }
     }
+    let mut governor = governor.lock().expect("governor lock poisoned");
     if let Some(perf_profile) = memory_fabric_profile
         .as_mut()
         .and_then(MemoryFabricProfile::reset)
     {
-        governor
-            .lock()
-            .expect("governor lock poisoned")
-            .set_memory_fabric_profile(perf_profile)?;
+        governor.set_memory_fabric_profile(perf_profile)?;
     }
+    governor.shutdown()?;
 }
 
 fn init_logger(verbose: Verbosity<InfoLevel>) {
@@ -164,7 +163,7 @@ fn init_logger(verbose: Verbosity<InfoLevel>) {
 }
 
 fn install_signal_handler(shutdown_tx: Sender<()>) -> Result<()> {
-    let mut signals = Signals::new(&[SIGINT, SIGTERM])?;
+    let mut signals = Signals::new([SIGINT, SIGTERM])?;
     std::thread::spawn(move || {
         for _sig in signals.forever() {
             let _ = shutdown_tx.send(());

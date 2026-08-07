@@ -38,7 +38,7 @@ impl Governor {
         let max_freq = *params.allowed_frequency_range.end();
         let requested_range = params.initial_frequency_range.clone();
         let startup_initial_range = params.initial_frequency_range.clone();
-        let target_cycle_interval = params.adjustment_interval.clone();
+        let target_cycle_interval = params.adjustment_interval;
         Ok(Self {
             params,
             gpu,
@@ -303,13 +303,11 @@ impl Governor {
         throttling: u32,
         recovery: u32,
     ) -> Result<()> {
-        // Validate all inputs
         if throttling != 0 && !(1..=95).contains(&throttling) {
             return Err(
                 "temperature throttling must be between 1 and 95 Celsius, or 0 to ignore".into(),
             );
         }
-        // Determine the effective throttling temperature for validation
         let effective_throttling = if throttling != 0 {
             Some(throttling)
         } else {
@@ -320,10 +318,7 @@ impl Governor {
             return Err(
                 "temperature recovery must be lower than throttling, or 0 to ignore".into(),
             );
-        } else {
         }
-
-        // Only modify after all validations pass
 
         if throttling != 0 {
             self.params.temperature.throttling_temp = effective_throttling;
