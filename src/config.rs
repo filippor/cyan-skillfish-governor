@@ -101,6 +101,7 @@ pub struct FrequencyRangeConfig {
 pub struct MemoryFabricProfileConfig {
     pub lower_utilization: f64,
     pub upper_utilization: f64,
+    pub bandwidth_scale_gib: f64,
 }
 
 pub struct GovernorParams {
@@ -605,10 +606,20 @@ fn parse_memory_fabric_profile_config(config: &Table) -> Option<MemoryFabricProf
     )
     .unwrap()
     .min(upper_utilization);
+    let bandwidth_scale_gib = parse_float_in_range_optional(
+        profile,
+        "bandwidth-scale-gib",
+        "memory-fabric-profile.bandwidth-scale-gib",
+        0.1..=1000.0,
+        Some(5.0),
+        Some(5.0),
+    )
+    .unwrap();
 
     Some(MemoryFabricProfileConfig {
         lower_utilization,
         upper_utilization,
+        bandwidth_scale_gib,
     })
 }
 
@@ -757,12 +768,14 @@ mod tests {
             enabled = true
             lower-utilization = 0.55
             upper-utilization = 0.75
+            bandwidth-scale-gib = 6.5
             "#,
         );
         let profile = cfg.memory_fabric_profile.unwrap();
 
         assert_eq!(profile.lower_utilization, 0.55);
         assert_eq!(profile.upper_utilization, 0.75);
+        assert_eq!(profile.bandwidth_scale_gib, 6.5);
     }
 
     #[test]
@@ -777,6 +790,7 @@ mod tests {
 
         assert_eq!(profile.lower_utilization, 0.60);
         assert_eq!(profile.upper_utilization, 0.70);
+        assert_eq!(profile.bandwidth_scale_gib, 5.0);
     }
 
     #[test]

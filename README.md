@@ -205,14 +205,18 @@ Top-level keys:
   - `set-method` (`"smu"` or `"kernel"`, default: `"smu"`): backend used to apply frequency/voltage.
 
 - `memory-fabric-profile`
-  - `enabled` (bool, default: `false`): select SMU performance profiles from effective memory demand. Requires `gpu.set-method = "smu"`.
-  - `lower-utilization` (fraction, default: `0.60`): use profile `1` at or below this utilization.
-  - `upper-utilization` (fraction, default: `0.70`): use profile `3` at or above this utilization. Profile `2` is used between the thresholds.
+  - `enabled` (bool, default: `false`): select SMU performance profiles from effective CPU memory demand and GPU load. Requires `gpu.set-method = "smu"`.
+    - Experimental: the underlying SMU queue 3 message `0x1E` is not fully understood and may cause a hardware reset. It is disabled in the example configuration.
+  - `lower-utilization` (fraction, default: `0.60`): switch from profile `3` to profile `1` below this utilization.
+  - `upper-utilization` (fraction, default: `0.70`): switch from profile `1` to profile `3` above this utilization.
+  - `bandwidth-scale-gib` (GiB/s, default: `5.0`): CPU DRAM bandwidth represented by utilization `1.0`. Tune this to the sustained PMU bandwidth reported in trace logs.
+  - Profile decisions use a time-aware exponentially weighted moving average (EWMA) with a 500 ms half-life, smoothly fading old bandwidth while filtering short-lived spikes and dips.
+  - A fixed utilization hysteresis of `0.05` prevents rapid profile changes near either threshold.
     - Profile `1`: approximately 450 MHz, deepest idle; reduces system power by roughly 20 W.
-    - Profile `2`: approximately 850 MHz, intermediate idle; not stability-tested.
     - Profile `3`: approximately 1750 MHz, active/baseline.
+    - Profile `2` is never selected because it may be unstable on BC-250.
   - On graceful shutdown, profile `3` is restored.
-  - Cyan Skillfish GPU metrics v2.2 does not expose UMC activity, and kernels without the `amd_df` PMU cannot report unified-memory bandwidth. In that case effective demand is the greater of system memory occupancy (`MemTotal - MemAvailable`) and measured GPU activity.
+  - Cyan Skillfish GPU metrics v2.2 does not expose UMC activity. CPU DRAM read bandwidth is estimated from the Zen 2 demand and hardware-prefetch DRAM-refill PMU counters and normalized using `bandwidth-scale-gib`. GPU load is used as a proxy for otherwise unavailable GPU-side bandwidth, and the larger utilization controls the profile. System-wide PMU access requires root or `CAP_PERFMON`.
 
 - `dbus`
   - `enabled` (bool, default: `false`): enable D-Bus performance-mode service.

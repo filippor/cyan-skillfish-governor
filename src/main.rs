@@ -16,6 +16,7 @@ use gpu::GPU;
 use gpu_frequency_fix::GpuFrequencyFix;
 use gpu_usage_fix::GpuUsageFix;
 use log::info;
+use log::warn;
 use memory_fabric_profile::MemoryFabricProfile;
 use signal_hook::consts::signal::*;
 use signal_hook::iterator::Signals;
@@ -54,6 +55,11 @@ fn main() -> Result<()> {
             "memory-fabric-profile requires gpu.set-method = \"smu\"",
         ));
     }
+    if config.memory_fabric_profile.is_some() {
+        warn!(
+            "Experimental memory fabric profiles are enabled; SMU queue 3 message 0x1E is not fully understood and may cause a hardware reset"
+        );
+    }
 
     let gpu = GPU::new(
         config.safe_points.clone(),
@@ -63,7 +69,11 @@ fn main() -> Result<()> {
     )?;
     let params: GovernorParams = config.to_governor_params(&gpu);
     let mut memory_fabric_profile = config.memory_fabric_profile.map(|profile| {
-        MemoryFabricProfile::new(profile.lower_utilization, profile.upper_utilization)
+        MemoryFabricProfile::new(
+            profile.lower_utilization,
+            profile.upper_utilization,
+            profile.bandwidth_scale_gib,
+        )
     });
 
     let gpu_usage_fix = if config.gpu_usage.fix_metrics {
@@ -103,10 +113,10 @@ fn main() -> Result<()> {
         let mut governor = governor
             .lock()
             .map_err(|_| AppError::from("governor lock poisoned"))?;
-        let gpu_activity = governor.run_iteration()?;
+        let gpu_load = governor.run_iteration()?;
 
         if let Some(memory_fabric_profile) = memory_fabric_profile.as_mut()
-            && let Some(perf_profile) = memory_fabric_profile.sample(f64::from(gpu_activity))?
+            && let Some(perf_profile) = memory_fabric_profile.sample(gpu_load)?
         {
             governor.set_memory_fabric_profile(perf_profile)?;
             info!("Memory fabric performance profile changed to {perf_profile}");

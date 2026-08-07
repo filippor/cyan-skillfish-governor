@@ -12,14 +12,20 @@ flush-every = 10
 [gpu]
 set-method = "smu"  # "smu" or "kernel"
 
-# Profiles: 1 = ~450 MHz idle, 2 = ~850 MHz intermediate (untested),
-# 3 = ~1750 MHz active/baseline.
-# This kernel exposes no unified-memory bandwidth counter, so GPU activity is
-# used as a fallback alongside total system memory occupancy.
+# Profiles: 1 = ~450 MHz idle, 3 = ~1750 MHz active/baseline.
+# Profile 2 is avoided because it may be unstable on BC-250.
+# CPU DRAM bandwidth and GPU load are combined as effective memory demand.
+# Profile decisions use an EWMA with a 500 ms half-life to filter short spikes.
+# System-wide PMU access requires root/CAP_PERFMON.
 [memory-fabric-profile]
+# Experimental: queue 3 message 0x1E is not fully understood and has caused
+# hardware resets on BC-250 systems. Enable only for controlled testing.
 enabled = true
-lower-utilization = 0.46
-upper-utilization = 0.60
+# Switch 1 -> 3 above 4.25 GiB/s and 3 -> 1 below 1.75 GiB/s. The wide
+# hysteresis band prevents rapid profile changes.
+lower-utilization = 0.40
+upper-utilization = 0.80
+bandwidth-scale-gib = 1.0
 
 [dbus]
 enabled = true
@@ -29,7 +35,7 @@ enabled = true
 # Both min and max can be omitted or set to 0 for no limit
 [frequency-range]
 min = 1000    # MHz
-max = 1850   # MHz
+max = 1500   # MHz
 
 # MHz/ms
 [timing.ramp-rates]
