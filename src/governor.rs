@@ -57,7 +57,7 @@ impl Governor {
         })
     }
 
-    pub fn run_iteration(&mut self) -> Result<()> {
+    pub fn run_iteration(&mut self) -> Result<f32> {
         let (average_load, burst_length) = if !self.performance_mode || self.gpu_usage_fix.is_some()
         {
             self.gpu.poll_and_get_load()?
@@ -83,7 +83,7 @@ impl Governor {
 
         let temp = self.update_max_freq_for_temperature()?;
         if self.test_mode {
-            return Ok(());
+            return Ok(average_load);
         }
         let (next_target, next_status, should_apply_change) = compute_frequency_decision(
             self.curr_freq,
@@ -124,7 +124,11 @@ impl Governor {
             self.params.adjustment_interval
         };
 
-        Ok(())
+        Ok(average_load)
+    }
+
+    pub fn set_memory_fabric_profile(&self, perf_profile: u32) -> Result<()> {
+        self.gpu.set_memory_fabric_profile(perf_profile)
     }
 
     pub fn apply_enable_performance_mode_command(&mut self, value: bool) {
