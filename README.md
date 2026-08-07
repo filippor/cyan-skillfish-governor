@@ -204,6 +204,15 @@ Top-level keys:
 - `gpu`
   - `set-method` (`"smu"` or `"kernel"`, default: `"smu"`): backend used to apply frequency/voltage.
 
+- `memory-fabric-profile`
+  - `enabled` (bool, default: `false`): select SMU performance profiles from effective memory demand. Requires `gpu.set-method = "smu"`.
+  - `lower-utilization` (fraction, default: `0.60`): use profile `1` at or below this utilization.
+  - `upper-utilization` (fraction, default: `0.70`): use profile `3` at or above this utilization. Profile `2` is used between the thresholds.
+    - Profile `1`: approximately 450 MHz, deepest idle; reduces system power by roughly 20 W.
+    - Profile `2`: approximately 850 MHz, intermediate idle; not stability-tested.
+    - Profile `3`: approximately 1750 MHz, active/baseline.
+  - Cyan Skillfish GPU metrics v2.2 does not expose UMC activity, and kernels without the `amd_df` PMU cannot report unified-memory bandwidth. In that case effective demand is the greater of system memory occupancy (`MemTotal - MemAvailable`) and measured GPU activity.
+
 - `dbus`
   - `enabled` (bool, default: `false`): enable D-Bus performance-mode service.
 

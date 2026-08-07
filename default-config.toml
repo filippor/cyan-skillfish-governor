@@ -4,13 +4,22 @@ sample = 250
 adjust = 100_000
 
 [gpu-usage]
-fix-metrics = true
+fix-metrics = false
  fix-freq = false
 method = "busy-flag" # "busy-flag" , "process" or "kernel"
 flush-every = 10
 
 [gpu]
 set-method = "smu"  # "smu" or "kernel"
+
+# Profiles: 1 = ~450 MHz idle, 2 = ~850 MHz intermediate (untested),
+# 3 = ~1750 MHz active/baseline.
+# This kernel exposes no unified-memory bandwidth counter, so GPU activity is
+# used as a fallback alongside total system memory occupancy.
+[memory-fabric-profile]
+enabled = true
+lower-utilization = 0.46
+upper-utilization = 0.60
 
 [dbus]
 enabled = true

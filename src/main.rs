@@ -6,6 +6,7 @@ mod governor;
 mod gpu;
 mod gpu_frequency_fix;
 mod gpu_usage_fix;
+mod memory_fabric_profile;
 use app_error::{AppError, Result};
 use clap::Parser;
 use clap_verbosity_flag::{InfoLevel, Verbosity};
@@ -15,6 +16,7 @@ use gpu::GPU;
 use gpu_frequency_fix::GpuFrequencyFix;
 use gpu_usage_fix::GpuUsageFix;
 use log::info;
+use memory_fabric_profile::MemoryFabricProfile;
 use signal_hook::consts::signal::*;
 use signal_hook::iterator::Signals;
 use std::sync::mpsc::{self, Sender};
@@ -45,6 +47,13 @@ fn main() -> Result<()> {
     install_signal_handler(shutdown_tx)?;
 
     let config = load_config(args.config_path.as_deref())?;
+    if config.memory_fabric_profile.is_some()
+        && !matches!(config.gpu.set_method, config::GpuSetMethod::Smu)
+    {
+        return Err(AppError::from(
+            "memory-fabric-profile requires gpu.set-method = \"smu\"",
+        ));
+    }
 
     let gpu = GPU::new(
         config.safe_points.clone(),
@@ -53,6 +62,9 @@ fn main() -> Result<()> {
         config.timing.sampling_interval,
     )?;
     let params: GovernorParams = config.to_governor_params(&gpu);
+    let mut memory_fabric_profile = config.memory_fabric_profile.map(|profile| {
+        MemoryFabricProfile::new(profile.lower_utilization, profile.upper_utilization)
+    });
 
     let gpu_usage_fix = if config.gpu_usage.fix_metrics {
         info!("GPU usage metrics fix enabled");
@@ -88,15 +100,20 @@ fn main() -> Result<()> {
             break;
         }
 
-        governor
+        let mut governor = governor
             .lock()
-            .map_err(|_| AppError::from("governor lock poisoned"))?
-            .run_iteration()?;
+            .map_err(|_| AppError::from("governor lock poisoned"))?;
+        let gpu_activity = governor.run_iteration()?;
 
-        let target_cycle_interval = governor
-            .lock()
-            .map_err(|_| AppError::from("governor lock poisoned"))?
-            .target_cycle_interval();
+        if let Some(memory_fabric_profile) = memory_fabric_profile.as_mut()
+            && let Some(perf_profile) = memory_fabric_profile.sample(f64::from(gpu_activity))?
+        {
+            governor.set_memory_fabric_profile(perf_profile)?;
+            info!("Memory fabric performance profile changed to {perf_profile}");
+        }
+
+        let target_cycle_interval = governor.target_cycle_interval();
+        drop(governor);
         let elapsed = loop_start.elapsed();
         if elapsed < target_cycle_interval {
             std::thread::sleep(target_cycle_interval - elapsed);
@@ -104,6 +121,15 @@ fn main() -> Result<()> {
     }
 
     info!("Shutting down gracefully...");
+    if let Some(perf_profile) = memory_fabric_profile
+        .as_mut()
+        .and_then(MemoryFabricProfile::reset)
+    {
+        governor
+            .lock()
+            .expect("governor lock poisoned")
+            .set_memory_fabric_profile(perf_profile)?;
+    }
     governor
         .lock()
         .expect("governor lock poisoned")

@@ -20,6 +20,11 @@ use process_usage_strategy::ProcessUsageStrategy;
 trait FreqStrategy: Send {
     fn change_freq(&mut self, freq: u32, vol: u32) -> Result<()>;
     fn get_freq(&self) -> Result<u32>;
+    fn set_memory_fabric_profile(&self, _perf_profile: u32) -> Result<()> {
+        Err(AppError::from(
+            "memory fabric profiles require gpu.set-method = \"smu\"",
+        ))
+    }
     fn shutdown(&mut self) -> Result<()> {
         Ok(())
     }
@@ -132,6 +137,10 @@ impl GPU {
         self.freq_strategy.get_freq()
     }
 
+    pub fn set_memory_fabric_profile(&self, perf_profile: u32) -> Result<()> {
+        self.freq_strategy.set_memory_fabric_profile(perf_profile)
+    }
+
     pub fn shutdown(&mut self) -> Result<()> {
         self.freq_strategy.shutdown()
     }
@@ -217,6 +226,12 @@ impl FreqStrategy for SmuFreqStrategy {
 
     fn get_freq(&self) -> Result<u32> {
         Ok(self.smu.get_gfx_frequency()?)
+    }
+
+    fn set_memory_fabric_profile(&self, perf_profile: u32) -> Result<()> {
+        self.smu.q3_set_perf_profile_index(perf_profile)?;
+        debug!("SMU set memory fabric performance profile to {perf_profile}");
+        Ok(())
     }
 
     fn shutdown(&mut self) -> Result<()> {

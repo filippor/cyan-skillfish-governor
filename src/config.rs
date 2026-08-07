@@ -51,6 +51,7 @@ pub struct Config {
     pub gpu: GpuConfig,
     pub dbus: DbusConfig,
     pub frequency_range: FrequencyRangeConfig,
+    pub memory_fabric_profile: Option<MemoryFabricProfileConfig>,
 }
 
 pub struct TimingConfig {
@@ -97,6 +98,11 @@ pub struct FrequencyRangeConfig {
     pub max: Option<u32>,
 }
 
+pub struct MemoryFabricProfileConfig {
+    pub lower_utilization: f64,
+    pub upper_utilization: f64,
+}
+
 pub struct GovernorParams {
     pub burst_freq_step: u32,
     pub freq_step: u32,
@@ -130,6 +136,7 @@ impl Config {
             },
             dbus: parse_dbus_config(&config),
             frequency_range: parse_frequency_range_config(&config),
+            memory_fabric_profile: parse_memory_fabric_profile_config(&config),
         })
     }
 
@@ -567,6 +574,44 @@ fn parse_frequency_range_config(config: &Table) -> FrequencyRangeConfig {
     FrequencyRangeConfig { min, max }
 }
 
+fn parse_memory_fabric_profile_config(config: &Table) -> Option<MemoryFabricProfileConfig> {
+    let profile = config
+        .get("memory-fabric-profile")
+        .and_then(|value| value.as_table());
+    let enabled = profile
+        .and_then(|table| table.get("enabled"))
+        .and_then(|value| value.as_bool())
+        .unwrap_or(false);
+    if !enabled {
+        return None;
+    }
+
+    let upper_utilization = parse_float_in_range_optional(
+        profile,
+        "upper-utilization",
+        "memory-fabric-profile.upper-utilization",
+        0.0..=1.0,
+        Some(0.70),
+        Some(0.70),
+    )
+    .unwrap();
+    let lower_utilization = parse_float_in_range_optional(
+        profile,
+        "lower-utilization",
+        "memory-fabric-profile.lower-utilization",
+        0.0..=1.0,
+        Some(0.60),
+        Some(0.60),
+    )
+    .unwrap()
+    .min(upper_utilization);
+
+    Some(MemoryFabricProfileConfig {
+        lower_utilization,
+        upper_utilization,
+    })
+}
+
 fn nested_table<'a>(table: Option<&'a Table>, key: &str) -> Option<&'a Table> {
     table
         .and_then(|t| t.get(key))
@@ -701,6 +746,37 @@ mod tests {
         assert!(matches!(cfg.gpu.set_method, GpuSetMethod::Smu));
         assert_eq!(cfg.safe_points.get(&350), Some(&700));
         assert_eq!(cfg.safe_points.get(&2000), Some(&1000));
+        assert!(cfg.memory_fabric_profile.is_none());
+    }
+
+    #[test]
+    fn parses_memory_fabric_profile() {
+        let cfg = parse_config(
+            r#"
+            [memory-fabric-profile]
+            enabled = true
+            lower-utilization = 0.55
+            upper-utilization = 0.75
+            "#,
+        );
+        let profile = cfg.memory_fabric_profile.unwrap();
+
+        assert_eq!(profile.lower_utilization, 0.55);
+        assert_eq!(profile.upper_utilization, 0.75);
+    }
+
+    #[test]
+    fn memory_fabric_profile_uses_default_thresholds() {
+        let cfg = parse_config(
+            r#"
+            [memory-fabric-profile]
+            enabled = true
+            "#,
+        );
+        let profile = cfg.memory_fabric_profile.unwrap();
+
+        assert_eq!(profile.lower_utilization, 0.60);
+        assert_eq!(profile.upper_utilization, 0.70);
     }
 
     #[test]
