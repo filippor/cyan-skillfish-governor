@@ -657,7 +657,6 @@ fn parse_memory_fabric_profile_config(config: &Table) -> Option<MemoryFabricProf
         Some(5.0),
     )
     .unwrap();
-
     Some(MemoryFabricProfileConfig {
         lower_utilization,
         upper_utilization,

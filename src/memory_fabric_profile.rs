@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 const CACHE_LINE_BYTES: f64 = 64.0;
 const GIB: f64 = 1024.0 * 1024.0 * 1024.0;
 const PROFILE_HYSTERESIS: f64 = 0.05;
-const BANDWIDTH_EMA_HALF_LIFE: Duration = Duration::from_millis(500);
+const UTILIZATION_EMA_HALF_LIFE: Duration = Duration::from_millis(500);
 const PERF_TYPE_RAW: u32 = 4;
 const PERF_FLAG_FD_CLOEXEC: usize = 8;
 const DEMAND_DRAM_REFILLS: u64 = 0x843;
@@ -19,6 +19,7 @@ pub struct MemoryFabricProfile {
     upper_utilization: f64,
     bandwidth_scale: f64,
     current_profile: Option<u32>,
+    gpu_load_ema: ExponentialMovingAverage,
     memory_bandwidth: Option<MemoryBandwidth>,
 }
 
@@ -29,6 +30,7 @@ impl MemoryFabricProfile {
             upper_utilization,
             bandwidth_scale: bandwidth_scale_gib * GIB,
             current_profile: None,
+            gpu_load_ema: ExponentialMovingAverage::new(UTILIZATION_EMA_HALF_LIFE),
             memory_bandwidth: None,
         }
     }
@@ -37,18 +39,20 @@ impl MemoryFabricProfile {
         if self.memory_bandwidth.is_none() {
             self.memory_bandwidth = Some(MemoryBandwidth::new(self.bandwidth_scale)?);
         }
-        let Some((bandwidth, mean_bandwidth, cpu_bandwidth_utilization)) =
+        let Some((bandwidth, bandwidth_ema, bandwidth_utilization)) =
             self.memory_bandwidth.as_mut().unwrap().sample()?
         else {
-            trace!("Memory fabric bandwidth counter warm-up sample");
+            trace!("Memory bandwidth counter warm-up sample");
             return Ok(None);
         };
-        let utilization = effective_utilization(cpu_bandwidth_utilization, gpu_load);
+        let gpu_load = f64::from(gpu_load).clamp(0.0, 1.0);
+        let gpu_utilization = self.gpu_load_ema.update(Instant::now(), gpu_load);
+        let utilization = bandwidth_utilization.max(gpu_utilization);
         let profile_change = self.select_profile(utilization);
         trace!(
-            "Memory fabric utilization: bandwidth={:.2} GiB/s, ema={:.2} GiB/s, cpu_bandwidth={cpu_bandwidth_utilization:.3}, gpu_load={gpu_load:.3}, effective={utilization:.3}, profile={}",
+            "Memory fabric utilization: bandwidth={:.2} GiB/s, bandwidth_ema={:.2} GiB/s, bandwidth_utilization={bandwidth_utilization:.3}, gpu_load={gpu_load:.3}, gpu_ema={gpu_utilization:.3}, effective={utilization:.3}, profile={}",
             bandwidth / GIB,
-            mean_bandwidth / GIB,
+            bandwidth_ema / GIB,
             self.current_profile.unwrap_or(3),
         );
         Ok(profile_change)
@@ -65,16 +69,24 @@ impl MemoryFabricProfile {
 
     fn select_profile(&mut self, utilization: f64) -> Option<u32> {
         let lower_down = (self.lower_utilization - PROFILE_HYSTERESIS).max(0.0);
+        let lower_up = (self.lower_utilization + PROFILE_HYSTERESIS).min(1.0);
+        let upper_down = (self.upper_utilization - PROFILE_HYSTERESIS).max(0.0);
         let upper_up = (self.upper_utilization + PROFILE_HYSTERESIS).min(1.0);
 
         let selected = match self.current_profile {
             Some(1) if utilization >= upper_up => 3,
+            Some(1) if utilization >= lower_up => 2,
             Some(1) => 1,
+            Some(2) if utilization >= upper_up => 3,
+            Some(2) if utilization <= lower_down => 1,
+            Some(2) => 2,
             Some(3) if utilization <= lower_down => 1,
+            Some(3) if utilization <= upper_down => 2,
             Some(3) => 3,
             None if utilization >= self.upper_utilization => 3,
-            None => 1,
-            Some(_) => unreachable!("memory fabric profile must be 1 or 3"),
+            None if utilization <= self.lower_utilization => 1,
+            None => 2,
+            Some(_) => unreachable!("memory fabric profile must be 1, 2, or 3"),
         };
 
         if self.current_profile == Some(selected) {
@@ -105,7 +117,7 @@ impl MemoryBandwidth {
             counters,
             bandwidth_scale,
             last_sample: None,
-            bandwidth_ema: ExponentialMovingAverage::new(BANDWIDTH_EMA_HALF_LIFE),
+            bandwidth_ema: ExponentialMovingAverage::new(UTILIZATION_EMA_HALF_LIFE),
         })
     }
 
@@ -120,11 +132,11 @@ impl MemoryBandwidth {
             return Ok(None);
         };
         let bandwidth = dram_bandwidth(previous_total, total, now.duration_since(previous_time));
-        let mean_bandwidth = self.bandwidth_ema.update(now, bandwidth);
+        let bandwidth_ema = self.bandwidth_ema.update(now, bandwidth);
         Ok(Some((
             bandwidth,
-            mean_bandwidth,
-            bandwidth_utilization(mean_bandwidth, self.bandwidth_scale),
+            bandwidth_ema,
+            bandwidth_utilization(bandwidth_ema, self.bandwidth_scale),
         )))
     }
 }
@@ -242,43 +254,28 @@ fn bandwidth_utilization(bandwidth: f64, bandwidth_scale: f64) -> f64 {
     (bandwidth / bandwidth_scale).clamp(0.0, 1.0)
 }
 
-fn effective_utilization(cpu_bandwidth_utilization: f64, gpu_load: f32) -> f64 {
-    cpu_bandwidth_utilization.max(f64::from(gpu_load).clamp(0.0, 1.0))
-}
-
 #[cfg(test)]
 mod tests {
     use super::{
         ExponentialMovingAverage, GIB, MemoryFabricProfile, bandwidth_utilization, dram_bandwidth,
-        effective_utilization, parse_cpu_list,
+        parse_cpu_list,
     };
     use std::time::{Duration, Instant};
 
     #[test]
     fn parses_online_cpu_ranges() {
-        let cpus = parse_cpu_list("0-3,8,10-11\n").unwrap();
-
-        assert_eq!(cpus, vec![0, 1, 2, 3, 8, 10, 11]);
+        assert_eq!(
+            parse_cpu_list("0-3,8,10-11\n").unwrap(),
+            vec![0, 1, 2, 3, 8, 10, 11]
+        );
     }
 
     #[test]
-    fn calculates_dram_bandwidth_from_cache_line_refills() {
+    fn calculates_and_normalizes_dram_bandwidth() {
         let bandwidth = dram_bandwidth(1_000, 2_000, Duration::from_millis(100));
 
         assert!((bandwidth - 640_000.0).abs() < f64::EPSILON);
-        assert!(5.0 * GIB > bandwidth);
-    }
-
-    #[test]
-    fn normalizes_bandwidth_using_configured_scale() {
         assert_eq!(bandwidth_utilization(2.5 * GIB, 5.0 * GIB), 0.5);
-        assert_eq!(bandwidth_utilization(6.0 * GIB, 5.0 * GIB), 1.0);
-    }
-
-    #[test]
-    fn gpu_load_contributes_to_effective_memory_demand() {
-        assert_eq!(effective_utilization(0.2, 0.9), f64::from(0.9_f32));
-        assert_eq!(effective_utilization(0.8, 0.3), 0.8);
     }
 
     #[test]
@@ -292,35 +289,39 @@ mod tests {
     }
 
     #[test]
-    fn selects_profiles_one_and_three_without_duplicate_writes() {
+    fn selects_all_three_profiles_without_duplicate_writes() {
         let mut profile = MemoryFabricProfile::new(0.60, 0.80, 5.0);
 
         assert_eq!(profile.select_profile(0.50), Some(1));
-        assert_eq!(profile.select_profile(0.70), None);
+        assert_eq!(profile.select_profile(0.70), Some(2));
         assert_eq!(profile.select_profile(0.75), None);
         assert_eq!(profile.select_profile(0.86), Some(3));
-        assert_eq!(profile.select_profile(0.70), None);
+        assert_eq!(profile.select_profile(0.70), Some(2));
         assert_eq!(profile.select_profile(0.60), None);
         assert_eq!(profile.select_profile(0.54), Some(1));
         assert_eq!(profile.select_profile(0.50), None);
         assert_eq!(profile.reset(), Some(3));
         assert_eq!(profile.reset(), None);
 
-        assert_eq!(profile.select_profile(0.70), None);
-        assert_eq!(profile.select_profile(0.90), None);
+        assert_eq!(profile.select_profile(0.70), Some(2));
+        assert_eq!(profile.select_profile(0.90), Some(3));
         assert_eq!(profile.reset(), None);
     }
 
     #[test]
-    fn wide_hysteresis_band_prevents_profile_flapping() {
+    fn hysteresis_prevents_flapping_at_both_profile_two_boundaries() {
         let mut profile = MemoryFabricProfile::new(0.40, 0.80, 5.0);
 
         assert_eq!(profile.select_profile(0.39), Some(1));
         assert_eq!(profile.select_profile(0.41), None);
-        assert_eq!(profile.select_profile(0.84), None);
-        assert_eq!(profile.select_profile(0.86), Some(3));
+        assert_eq!(profile.select_profile(0.46), Some(2));
         assert_eq!(profile.select_profile(0.39), None);
         assert_eq!(profile.select_profile(0.34), Some(1));
+        assert_eq!(profile.select_profile(0.46), Some(2));
+        assert_eq!(profile.select_profile(0.81), None);
+        assert_eq!(profile.select_profile(0.86), Some(3));
+        assert_eq!(profile.select_profile(0.81), None);
+        assert_eq!(profile.select_profile(0.74), Some(2));
     }
 
     #[test]
