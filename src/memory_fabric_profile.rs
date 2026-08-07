@@ -17,45 +17,76 @@ const PREFETCH_DRAM_REFILLS: u64 = 0x85a;
 pub struct MemoryFabricProfile {
     lower_utilization: f64,
     upper_utilization: f64,
-    bandwidth_scale: f64,
+    capacities: [ProfileCapacity; 3],
     current_profile: Option<u32>,
-    gpu_load_ema: ExponentialMovingAverage,
+    effective_utilization_ema: ExponentialMovingAverage,
     memory_bandwidth: Option<MemoryBandwidth>,
 }
 
+#[derive(Clone, Copy)]
+struct ProfileCapacity {
+    bandwidth: f64,
+    core_bandwidth: f64,
+}
+
 impl MemoryFabricProfile {
-    pub fn new(lower_utilization: f64, upper_utilization: f64, bandwidth_scale_gib: f64) -> Self {
+    pub fn new(
+        lower_utilization: f64,
+        upper_utilization: f64,
+        capacities_gib: [(f64, f64); 3],
+    ) -> Self {
         Self {
             lower_utilization,
             upper_utilization,
-            bandwidth_scale: bandwidth_scale_gib * GIB,
+            capacities: capacities_gib.map(|(bandwidth, core_bandwidth)| ProfileCapacity {
+                bandwidth: bandwidth * GIB,
+                core_bandwidth: core_bandwidth * GIB,
+            }),
             current_profile: None,
-            gpu_load_ema: ExponentialMovingAverage::new(UTILIZATION_EMA_HALF_LIFE),
+            effective_utilization_ema: ExponentialMovingAverage::new(UTILIZATION_EMA_HALF_LIFE),
             memory_bandwidth: None,
         }
     }
 
     pub fn sample(&mut self, gpu_load: f32) -> Result<Option<u32>> {
         if self.memory_bandwidth.is_none() {
-            self.memory_bandwidth = Some(MemoryBandwidth::new(self.bandwidth_scale)?);
+            self.memory_bandwidth = Some(MemoryBandwidth::new()?);
         }
-        let Some((bandwidth, bandwidth_ema, bandwidth_utilization)) =
+        let Some((bandwidth, max_core_bandwidth)) =
             self.memory_bandwidth.as_mut().unwrap().sample()?
         else {
             trace!("Memory bandwidth counter warm-up sample");
             return Ok(None);
         };
+        let active_profile = self.current_profile.unwrap_or(3);
+        let (aggregate_utilization, core_utilization) =
+            self.memory_utilization(active_profile, bandwidth, max_core_bandwidth);
         let gpu_load = f64::from(gpu_load).clamp(0.0, 1.0);
-        let gpu_utilization = self.gpu_load_ema.update(Instant::now(), gpu_load);
-        let utilization = bandwidth_utilization.max(gpu_utilization);
+        let effective = aggregate_utilization.max(core_utilization).max(gpu_load);
+        let utilization = self
+            .effective_utilization_ema
+            .update(Instant::now(), effective);
         let profile_change = self.select_profile(utilization);
         trace!(
-            "Memory fabric utilization: bandwidth={:.2} GiB/s, bandwidth_ema={:.2} GiB/s, bandwidth_utilization={bandwidth_utilization:.3}, gpu_load={gpu_load:.3}, gpu_ema={gpu_utilization:.3}, effective={utilization:.3}, profile={}",
+            "Memory fabric utilization: bandwidth={:.2} GiB/s, max_core_bandwidth={:.2} GiB/s, bandwidth_utilization={aggregate_utilization:.3}, core_utilization={core_utilization:.3}, gpu_load={gpu_load:.3}, effective={effective:.3}, effective_ema={utilization:.3}, sampled_profile={active_profile}, profile={}",
             bandwidth / GIB,
-            bandwidth_ema / GIB,
+            max_core_bandwidth / GIB,
             self.current_profile.unwrap_or(3),
         );
         Ok(profile_change)
+    }
+
+    fn memory_utilization(
+        &self,
+        active_profile: u32,
+        bandwidth: f64,
+        max_core_bandwidth: f64,
+    ) -> (f64, f64) {
+        let capacity = self.capacities[(active_profile - 1) as usize];
+        (
+            bandwidth_utilization(bandwidth, capacity.bandwidth),
+            bandwidth_utilization(max_core_bandwidth, capacity.core_bandwidth),
+        )
     }
 
     pub fn reset(&mut self) -> Option<u32> {
@@ -100,13 +131,12 @@ impl MemoryFabricProfile {
 
 struct MemoryBandwidth {
     counters: Vec<PerfCounter>,
-    bandwidth_scale: f64,
     last_sample: Option<(Instant, u64)>,
-    bandwidth_ema: ExponentialMovingAverage,
+    last_core_totals: Option<Vec<u64>>,
 }
 
 impl MemoryBandwidth {
-    fn new(bandwidth_scale: f64) -> Result<Self> {
+    fn new() -> Result<Self> {
         let online = std::fs::read_to_string("/sys/devices/system/cpu/online")?;
         let mut counters = Vec::new();
         for cpu in parse_cpu_list(&online)? {
@@ -115,29 +145,33 @@ impl MemoryBandwidth {
         }
         Ok(Self {
             counters,
-            bandwidth_scale,
             last_sample: None,
-            bandwidth_ema: ExponentialMovingAverage::new(UTILIZATION_EMA_HALF_LIFE),
+            last_core_totals: None,
         })
     }
 
-    fn sample(&mut self) -> Result<Option<(f64, f64, f64)>> {
-        let total = self
+    fn sample(&mut self) -> Result<Option<(f64, f64)>> {
+        let core_totals = self
             .counters
-            .iter()
-            .try_fold(0u64, |sum, counter| Ok::<_, IoError>(sum + counter.read()?))?;
+            .chunks_exact(2)
+            .map(|counters| Ok::<_, IoError>(counters[0].read()? + counters[1].read()?))
+            .collect::<std::io::Result<Vec<_>>>()?;
+        let total = core_totals.iter().sum();
         let now = Instant::now();
         let previous = self.last_sample.replace((now, total));
+        let previous_core_totals = self.last_core_totals.replace(core_totals);
         let Some((previous_time, previous_total)) = previous else {
             return Ok(None);
         };
-        let bandwidth = dram_bandwidth(previous_total, total, now.duration_since(previous_time));
-        let bandwidth_ema = self.bandwidth_ema.update(now, bandwidth);
-        Ok(Some((
-            bandwidth,
-            bandwidth_ema,
-            bandwidth_utilization(bandwidth_ema, self.bandwidth_scale),
-        )))
+        let elapsed = now.duration_since(previous_time);
+        let bandwidth = dram_bandwidth(previous_total, total, elapsed);
+        let max_core_bandwidth = max_core_bandwidth(
+            previous_core_totals.as_ref().unwrap(),
+            self.last_core_totals.as_ref().unwrap(),
+            elapsed,
+        )
+        .unwrap_or(0.0);
+        Ok(Some((bandwidth, max_core_bandwidth)))
     }
 }
 
@@ -250,6 +284,14 @@ fn dram_bandwidth(previous_total: u64, total: u64, elapsed: Duration) -> f64 {
     }
 }
 
+fn max_core_bandwidth(previous: &[u64], current: &[u64], elapsed: Duration) -> Option<f64> {
+    previous
+        .iter()
+        .zip(current)
+        .map(|(&previous, &current)| dram_bandwidth(previous, current, elapsed))
+        .reduce(f64::max)
+}
+
 fn bandwidth_utilization(bandwidth: f64, bandwidth_scale: f64) -> f64 {
     (bandwidth / bandwidth_scale).clamp(0.0, 1.0)
 }
@@ -258,7 +300,7 @@ fn bandwidth_utilization(bandwidth: f64, bandwidth_scale: f64) -> f64 {
 mod tests {
     use super::{
         ExponentialMovingAverage, GIB, MemoryFabricProfile, bandwidth_utilization, dram_bandwidth,
-        parse_cpu_list,
+        max_core_bandwidth, parse_cpu_list,
     };
     use std::time::{Duration, Instant};
 
@@ -279,6 +321,34 @@ mod tests {
     }
 
     #[test]
+    fn calculates_maximum_per_core_bandwidth() {
+        let bandwidth =
+            max_core_bandwidth(&[1_000, 2_000], &[1_500, 3_000], Duration::from_millis(100));
+
+        assert_eq!(bandwidth, Some(640_000.0));
+    }
+
+    #[test]
+    fn normalizes_bandwidth_against_the_active_profile_capacity() {
+        let profile = MemoryFabricProfile::new(0.40, 0.80, [(4.0, 2.3), (12.4, 6.1), (18.1, 4.4)]);
+
+        assert_eq!(
+            profile.memory_utilization(1, 4.0 * GIB, 2.3 * GIB),
+            (1.0, 1.0)
+        );
+        assert_eq!(
+            profile.memory_utilization(2, 12.4 * GIB, 6.1 * GIB),
+            (1.0, 1.0)
+        );
+        assert_eq!(
+            profile.memory_utilization(3, 18.1 * GIB, 4.4 * GIB),
+            (1.0, 1.0)
+        );
+        assert!(profile.memory_utilization(1, 4.0 * GIB, 0.0).0 > 0.99);
+        assert!(profile.memory_utilization(2, 4.0 * GIB, 0.0).0 < 0.33);
+    }
+
+    #[test]
     fn exponential_mean_halves_old_value_weight_each_half_life() {
         let start = Instant::now();
         let mut mean = ExponentialMovingAverage::new(Duration::from_millis(500));
@@ -290,7 +360,8 @@ mod tests {
 
     #[test]
     fn selects_all_three_profiles_without_duplicate_writes() {
-        let mut profile = MemoryFabricProfile::new(0.60, 0.80, 5.0);
+        let mut profile =
+            MemoryFabricProfile::new(0.60, 0.80, [(4.0, 2.3), (12.4, 6.1), (18.1, 4.4)]);
 
         assert_eq!(profile.select_profile(0.50), Some(1));
         assert_eq!(profile.select_profile(0.70), Some(2));
@@ -310,7 +381,8 @@ mod tests {
 
     #[test]
     fn hysteresis_prevents_flapping_at_both_profile_two_boundaries() {
-        let mut profile = MemoryFabricProfile::new(0.40, 0.80, 5.0);
+        let mut profile =
+            MemoryFabricProfile::new(0.40, 0.80, [(4.0, 2.3), (12.4, 6.1), (18.1, 4.4)]);
 
         assert_eq!(profile.select_profile(0.39), Some(1));
         assert_eq!(profile.select_profile(0.41), None);
@@ -326,7 +398,8 @@ mod tests {
 
     #[test]
     fn reset_selects_profile_three_before_first_sample() {
-        let mut profile = MemoryFabricProfile::new(0.60, 0.80, 5.0);
+        let mut profile =
+            MemoryFabricProfile::new(0.60, 0.80, [(4.0, 2.3), (12.4, 6.1), (18.1, 4.4)]);
 
         assert_eq!(profile.reset(), Some(3));
     }
