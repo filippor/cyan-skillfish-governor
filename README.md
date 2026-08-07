@@ -211,6 +211,7 @@ Top-level keys:
     - Profile `1`: approximately 450 MHz, deepest idle; reduces system power by roughly 20 W.
     - Profile `2`: approximately 850 MHz, intermediate idle; not stability-tested.
     - Profile `3`: approximately 1750 MHz, active/baseline.
+  - On graceful shutdown, profile `3` is restored.
   - Cyan Skillfish GPU metrics v2.2 does not expose UMC activity, and kernels without the `amd_df` PMU cannot report unified-memory bandwidth. In that case effective demand is the greater of system memory occupancy (`MemTotal - MemAvailable`) and measured GPU activity.
 
 - `dbus`

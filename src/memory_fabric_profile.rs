@@ -24,9 +24,9 @@ impl MemoryFabricProfile {
     }
 
     pub fn reset(&mut self) -> Option<u32> {
-        if self.current_profile.is_some_and(|profile| profile != 1) {
-            self.current_profile = Some(1);
-            Some(1)
+        if self.current_profile != Some(3) {
+            self.current_profile = Some(3);
+            Some(3)
         } else {
             None
         }
@@ -113,12 +113,20 @@ mod tests {
         assert_eq!(profile.select_profile(0.70), Some(2));
         assert_eq!(profile.select_profile(0.60), Some(1));
         assert_eq!(profile.select_profile(0.50), None);
+        assert_eq!(profile.reset(), Some(3));
         assert_eq!(profile.reset(), None);
 
         assert_eq!(profile.select_profile(0.70), Some(2));
-        assert_eq!(profile.reset(), Some(1));
-        assert_eq!(profile.select_profile(0.90), Some(3));
-        assert_eq!(profile.reset(), Some(1));
+        assert_eq!(profile.reset(), Some(3));
+        assert_eq!(profile.select_profile(0.90), None);
+        assert_eq!(profile.reset(), None);
+    }
+
+    #[test]
+    fn reset_selects_profile_three_before_first_sample() {
+        let mut profile = MemoryFabricProfile::new(0.60, 0.80);
+
+        assert_eq!(profile.reset(), Some(3));
     }
 
     #[test]
