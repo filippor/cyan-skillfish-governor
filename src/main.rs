@@ -62,7 +62,10 @@ fn main() -> Result<()> {
         config.timing.sampling_interval,
     )?;
     let params: GovernorParams = config.to_governor_params(&gpu);
-    let mut memory_fabric_profile = config.memory_fabric_profile.map(|profile| {
+    
+
+    
+    let mut memory_fabric_profile = config.memory_fabric_profile.and_then(|profile| {
         MemoryFabricProfile::new(
             profile.lower_utilization,
             profile.upper_utilization,
