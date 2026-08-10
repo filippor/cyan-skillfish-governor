@@ -20,14 +20,14 @@ set-method = "smu"  # "smu" or "kernel"
 # hardware resets on BC-250 systems. Enable only for controlled testing.
 enabled = true
 # A +/-0.05 utilization hysteresis reduces profile flapping.
-lower-utilization = 0.40
-upper-utilization = 0.80
+lower-utilization = 0.50
+upper-utilization = 0.72
 # Measured CPU DRAM-read capacities for each profile. Recalibrate these values
 # with the memory_profile_capacity example when hardware or firmware changes.
 profile-1-bandwidth-scale-gib = 4.0
 profile-1-core-bandwidth-scale-gib = 2.3
 profile-2-bandwidth-scale-gib = 12.4
-profile-2-core-bandwidth-scale-gib = 6.1
+profile-2-core-bandwidth-scale-gib = 20.0 #6.1
 profile-3-bandwidth-scale-gib = 18.1
 profile-3-core-bandwidth-scale-gib = 4.4
 

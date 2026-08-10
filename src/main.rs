@@ -48,13 +48,7 @@ fn main() -> Result<()> {
     install_signal_handler(shutdown_tx)?;
 
     let config = load_config(args.config_path.as_deref())?;
-    if config.memory_fabric_profile.is_some()
-        && !matches!(config.gpu.set_method, config::GpuSetMethod::Smu)
-    {
-        return Err(AppError::from(
-            "memory-fabric-profile requires gpu.set-method = \"smu\"",
-        ));
-    }
+
     if config.memory_fabric_profile.is_some() {
         warn!(
             "Experimental memory fabric profiles are enabled; SMU queue 3 message 0x1E is not fully understood and may cause a hardware reset"
@@ -66,6 +60,7 @@ fn main() -> Result<()> {
         config.gpu.set_method,
         config.gpu_usage.method,
         config.timing.sampling_interval,
+        config.memory_fabric_profile.is_some(),
     )?;
     let params: GovernorParams = config.to_governor_params(&gpu);
     let mut memory_fabric_profile = config.memory_fabric_profile.map(|profile| {

@@ -4,6 +4,7 @@ use cyan_skillfish_governor_smu::Bc250Smu;
 use libdrm_amdgpu_sys::{AMDGPU::DeviceHandle, PCI::BUS_INFO};
 use log::debug;
 use log::info;
+use log::warn;
 
 use std::{collections::BTreeMap, fs::File, io::Error as IoError, path::PathBuf, time::Duration};
 
@@ -20,11 +21,7 @@ use process_usage_strategy::ProcessUsageStrategy;
 trait FreqStrategy: Send {
     fn change_freq(&mut self, freq: u32, vol: u32) -> Result<()>;
     fn get_freq(&self) -> Result<u32>;
-    fn set_memory_fabric_profile(&self, _perf_profile: u32) -> Result<()> {
-        Err(AppError::from(
-            "memory fabric profiles require gpu.set-method = \"smu\"",
-        ))
-    }
+    
     fn shutdown(&mut self) -> Result<()> {
         Ok(())
     }
@@ -33,6 +30,9 @@ trait FreqStrategy: Send {
     }
 }
 
+trait MemoryFabricStrategy: Send {
+    fn set_memory_fabric_profile(&self, perf_profile: u32) -> Result<()>;
+}
 trait UsageStrategy: Send {
     fn poll_and_get_load(&mut self) -> Result<(f32, u32)>;
 }
@@ -42,6 +42,7 @@ pub struct GPU {
     pub min_freq: u32,
     pub max_freq: u32,
     freq_strategy: Box<dyn FreqStrategy + Send>,
+    memory_fabric_strategy: Box<dyn MemoryFabricStrategy + Send>,
     usage_strategy: Box<dyn UsageStrategy + Send>,
     safe_points: BTreeMap<u32, u32>,
     location: BUS_INFO,
@@ -53,6 +54,7 @@ impl GPU {
         gpu_set_method: GpuSetMethod,
         gpu_usage_method: GpuUsageMethod,
         sampling_interval: Duration,
+        enable_memory_fabric: bool,
     ) -> Result<GPU> {
         let location = BUS_INFO {
             domain: 0,
@@ -72,6 +74,12 @@ impl GPU {
             GpuSetMethod::Kernel => {
                 Box::new(KernelFreqStrategy::new(location.get_drm_render_path()?)?)
             }
+        };
+
+        let memory_fabric_strategy: Box<dyn MemoryFabricStrategy + Send> = if enable_memory_fabric {
+            Box::new(MemoryFabricSmuStrategy::new()?)
+        } else {
+            Box::new(EmptyMemoryFabricStrategy {})
         };
 
         let safe_points = freq_strategy.clamp_safe_points(safe_points)?;
@@ -102,6 +110,7 @@ impl GPU {
                 .ok_or_else(|| IoError::other("safe_points cannot be empty"))?
                 .0,
             freq_strategy,
+            memory_fabric_strategy,
             usage_strategy,
             safe_points,
             location,
@@ -138,7 +147,8 @@ impl GPU {
     }
 
     pub fn set_memory_fabric_profile(&self, perf_profile: u32) -> Result<()> {
-        self.freq_strategy.set_memory_fabric_profile(perf_profile)
+        self.memory_fabric_strategy
+            .set_memory_fabric_profile(perf_profile)
     }
 
     pub fn shutdown(&mut self) -> Result<()> {
@@ -200,9 +210,45 @@ fn init_device_handle(render_path: PathBuf) -> Result<DeviceHandle> {
         .map_err(|e| IoError::other(format!("DeviceHandle::init_with_fd failed: {e}")))?;
     Ok(dev_handle)
 }
+
+struct MemoryFabricSmuStrategy {
+    smu: Bc250Smu,
+}
+
+
+
+impl MemoryFabricSmuStrategy {
+    fn new() -> Result<Self> {
+        let smu = Bc250Smu::new("0000:00:00.0", true, true, 500)?;
+        smu.check_test_message()?;
+        info!("SMU communication verified");
+        smu.set_gpu_max_temperature(80)?;
+        smu.unforce_gfx_freq()?;
+        smu.unforce_gfx_vid()?;
+        Ok(Self { smu })
+    }
+}
+
+struct EmptyMemoryFabricStrategy {}
+impl MemoryFabricStrategy  for EmptyMemoryFabricStrategy {
+ fn set_memory_fabric_profile(&self, perf_profile: u32) -> Result<()> {   
+        warn!("Don't set memory fabric performance profile to {perf_profile}");
+        Ok(())
+    }
+}
+
+impl MemoryFabricStrategy  for MemoryFabricSmuStrategy {
+ fn set_memory_fabric_profile(&self, perf_profile: u32) -> Result<()> {
+        self.smu.q3_set_perf_profile_index(perf_profile)?;
+        debug!("SMU set memory fabric performance profile to {perf_profile}");
+        Ok(())
+    }
+}
+
 struct SmuFreqStrategy {
     smu: Bc250Smu,
 }
+
 
 impl SmuFreqStrategy {
     fn new() -> Result<Self> {
@@ -216,6 +262,7 @@ impl SmuFreqStrategy {
     }
 }
 
+
 impl FreqStrategy for SmuFreqStrategy {
     fn change_freq(&mut self, freq: u32, vol: u32) -> Result<()> {
         self.smu.force_gfx_vid(vol)?;
@@ -228,11 +275,7 @@ impl FreqStrategy for SmuFreqStrategy {
         Ok(self.smu.get_gfx_frequency()?)
     }
 
-    fn set_memory_fabric_profile(&self, perf_profile: u32) -> Result<()> {
-        self.smu.q3_set_perf_profile_index(perf_profile)?;
-        debug!("SMU set memory fabric performance profile to {perf_profile}");
-        Ok(())
-    }
+   
 
     fn shutdown(&mut self) -> Result<()> {
         let _ = self.smu.unforce_gfx_freq();

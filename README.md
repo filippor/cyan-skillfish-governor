@@ -205,11 +205,10 @@ Top-level keys:
   - `set-method` (`"smu"` or `"kernel"`, default: `"smu"`): backend used to apply frequency/voltage.
 
 - `memory-fabric-profile`
-  - `enabled` (bool, default: `false`): select SMU performance profiles from GPU usage and CPU-originated DRAM bandwidth. CPU compute load is not used. Requires `gpu.set-method = "smu"`.
+  - `enabled` (bool, default: `false`): select SMU performance profiles from GPU usage and CPU-originated DRAM bandwidth. 
   - `profile-1-bandwidth-scale-gib` / `profile-1-core-bandwidth-scale-gib` (GiB/s, defaults: `4.0` / `2.3`): aggregate and maximum per-core DRAM bandwidth represented by utilization `1.0` while profile `1` is active.
   - `profile-2-bandwidth-scale-gib` / `profile-2-core-bandwidth-scale-gib` (GiB/s, defaults: `12.4` / `6.1`): profile `2` capacities.
   - `profile-3-bandwidth-scale-gib` / `profile-3-core-bandwidth-scale-gib` (GiB/s, defaults: `18.1` / `4.4`): profile `3` capacities. The non-monotonic per-core defaults reflect measured BC-250 behavior.
-  - Legacy `bandwidth-scale-gib` and `core-bandwidth-scale-gib` values remain accepted and apply one capacity pair to all profiles.
     - Experimental: the underlying SMU queue 3 message `0x1E` is not fully understood and may cause a hardware reset. It is disabled in the example configuration.
   - `lower-utilization` (fraction, default: `0.60`): boundary between profiles `1` and `2`.
   - `upper-utilization` (fraction, default: `0.70`): boundary between profiles `2` and `3`.

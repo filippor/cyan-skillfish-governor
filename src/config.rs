@@ -612,50 +612,16 @@ fn parse_memory_fabric_profile_config(config: &Table) -> Option<MemoryFabricProf
     )
     .unwrap()
     .min(upper_utilization);
-    let legacy_bandwidth_scale_gib = parse_legacy_memory_fabric_scale(
-        profile,
-        "bandwidth-scale-gib",
-        "memory-fabric-profile.bandwidth-scale-gib",
-    );
-    let legacy_core_bandwidth_scale_gib = parse_legacy_memory_fabric_scale(
-        profile,
-        "core-bandwidth-scale-gib",
-        "memory-fabric-profile.core-bandwidth-scale-gib",
-    );
     let capacities = [
-        parse_memory_fabric_profile_capacity(
-            profile,
-            1,
-            legacy_bandwidth_scale_gib.unwrap_or(4.0),
-            legacy_core_bandwidth_scale_gib.unwrap_or(2.3),
-        ),
-        parse_memory_fabric_profile_capacity(
-            profile,
-            2,
-            legacy_bandwidth_scale_gib.unwrap_or(12.4),
-            legacy_core_bandwidth_scale_gib.unwrap_or(6.1),
-        ),
-        parse_memory_fabric_profile_capacity(
-            profile,
-            3,
-            legacy_bandwidth_scale_gib.unwrap_or(18.1),
-            legacy_core_bandwidth_scale_gib.unwrap_or(4.4),
-        ),
+        parse_memory_fabric_profile_capacity(profile, 1, 4.0, 2.3),
+        parse_memory_fabric_profile_capacity(profile, 2, 12.4, 6.1),
+        parse_memory_fabric_profile_capacity(profile, 3, 18.1, 4.4),
     ];
     Some(MemoryFabricProfileConfig {
         lower_utilization,
         upper_utilization,
         capacities,
     })
-}
-
-fn parse_legacy_memory_fabric_scale(
-    profile: Option<&Table>,
-    key: &str,
-    config_key: &str,
-) -> Option<f64> {
-    profile.and_then(|table| table.get(key))?;
-    parse_float_in_range_optional(profile, key, config_key, 0.1..=1000.0, None, None)
 }
 
 fn parse_memory_fabric_profile_capacity(
@@ -873,24 +839,6 @@ mod tests {
         assert_eq!(profile.capacities[1].core_bandwidth_scale_gib, 6.1);
         assert_eq!(profile.capacities[2].bandwidth_scale_gib, 18.1);
         assert_eq!(profile.capacities[2].core_bandwidth_scale_gib, 4.4);
-    }
-
-    #[test]
-    fn memory_fabric_profile_accepts_legacy_global_scales() {
-        let cfg = parse_config(
-            r#"
-            [memory-fabric-profile]
-            enabled = true
-            bandwidth-scale-gib = 6.5
-            core-bandwidth-scale-gib = 4.5
-            "#,
-        );
-        let profile = cfg.memory_fabric_profile.unwrap();
-
-        for capacity in profile.capacities {
-            assert_eq!(capacity.bandwidth_scale_gib, 6.5);
-            assert_eq!(capacity.core_bandwidth_scale_gib, 4.5);
-        }
     }
 
     #[test]
