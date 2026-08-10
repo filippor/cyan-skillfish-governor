@@ -60,7 +60,6 @@ fn main() -> Result<()> {
         config.gpu.set_method,
         config.gpu_usage.method,
         config.timing.sampling_interval,
-        config.memory_fabric_profile.is_some(),
     )?;
     let params: GovernorParams = config.to_governor_params(&gpu);
     let mut memory_fabric_profile = config.memory_fabric_profile.map(|profile| {
@@ -73,8 +72,8 @@ fn main() -> Result<()> {
                     capacity.core_bandwidth_scale_gib,
                 )
             }),
-        )
-    });
+        ).ok()
+    }).unwrap_or(None);
 
     let gpu_usage_fix = if config.gpu_usage.fix_metrics {
         info!("GPU usage metrics fix enabled");
@@ -115,11 +114,8 @@ fn main() -> Result<()> {
             .map_err(|_| AppError::from("governor lock poisoned"))?;
         let gpu_load = governor.run_iteration()?;
 
-        if let Some(memory_fabric_profile) = memory_fabric_profile.as_mut()
-            && let Some(perf_profile) = memory_fabric_profile.sample(gpu_load)?
-        {
-            governor.set_memory_fabric_profile(perf_profile)?;
-            info!("Memory fabric performance profile changed to {perf_profile}");
+        if let Some(memory_fabric_profile) = memory_fabric_profile.as_mut() {
+            memory_fabric_profile.update_profile(gpu_load)?;
         }
 
         let target_cycle_interval = governor.target_cycle_interval();
@@ -132,11 +128,11 @@ fn main() -> Result<()> {
 
     info!("Shutting down gracefully...");
     let mut governor = governor.lock().expect("governor lock poisoned");
-    if let Some(perf_profile) = memory_fabric_profile
+    if let Some(memory_fabric_profile) = memory_fabric_profile
         .as_mut()
-        .and_then(MemoryFabricProfile::reset)
+        
     {
-        governor.set_memory_fabric_profile(perf_profile)?;
+        memory_fabric_profile.reset()?;
     }
     governor.shutdown()?;
     Ok(())
