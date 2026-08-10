@@ -127,10 +127,6 @@ impl Governor {
         Ok(average_load)
     }
 
-    pub fn set_memory_fabric_profile(&self, perf_profile: u32) -> Result<()> {
-        self.gpu.set_memory_fabric_profile(perf_profile)
-    }
-
     pub fn apply_enable_performance_mode_command(&mut self, value: bool) {
         info!(
             "Performance mode {}",

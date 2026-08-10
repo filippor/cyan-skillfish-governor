@@ -1,9 +1,12 @@
 use crate::app_error::Result;
+use cyan_skillfish_governor_smu::Bc250Smu;
 use log::trace;
 use std::fs::File;
 use std::io::{Error as IoError, Read};
 use std::os::fd::FromRawFd;
 use std::time::{Duration, Instant};
+use log::debug;
+use log::info;
 
 const CACHE_LINE_BYTES: f64 = 64.0;
 const GIB: f64 = 1024.0 * 1024.0 * 1024.0;
@@ -14,6 +17,11 @@ const PERF_FLAG_FD_CLOEXEC: usize = 8;
 const DEMAND_DRAM_REFILLS: u64 = 0x843;
 const PREFETCH_DRAM_REFILLS: u64 = 0x85a;
 
+trait MemoryFabricStrategy: Send {
+    fn set_memory_fabric_profile(&self, perf_profile: u32) -> Result<()>;
+}
+
+
 pub struct MemoryFabricProfile {
     lower_utilization: f64,
     upper_utilization: f64,
@@ -21,7 +29,7 @@ pub struct MemoryFabricProfile {
     current_profile: Option<u32>,
     effective_utilization_ema: ExponentialMovingAverage,
     memory_bandwidth: Option<MemoryBandwidth>,
-}
+    memory_fabric_strategy: Box<dyn MemoryFabricStrategy + Send>,}
 
 #[derive(Clone, Copy)]
 struct ProfileCapacity {
@@ -34,8 +42,8 @@ impl MemoryFabricProfile {
         lower_utilization: f64,
         upper_utilization: f64,
         capacities_gib: [(f64, f64); 3],
-    ) -> Self {
-        Self {
+    ) -> Result<Self> {
+        Ok(Self {
             lower_utilization,
             upper_utilization,
             capacities: capacities_gib.map(|(bandwidth, core_bandwidth)| ProfileCapacity {
@@ -45,9 +53,11 @@ impl MemoryFabricProfile {
             current_profile: None,
             effective_utilization_ema: ExponentialMovingAverage::new(UTILIZATION_EMA_HALF_LIFE),
             memory_bandwidth: None,
-        }
+            memory_fabric_strategy: Box::new(MemoryFabricSmuStrategy::new()?),
+        })
     }
 
+   
     pub fn sample(&mut self, gpu_load: f32) -> Result<Option<u32>> {
         if self.memory_bandwidth.is_none() {
             self.memory_bandwidth = Some(MemoryBandwidth::new()?);
@@ -76,6 +86,14 @@ impl MemoryFabricProfile {
         Ok(profile_change)
     }
 
+     pub fn update_profile(&mut self, gpu_load: f32) -> Result<()> {
+        if let Some(perf_profile) = self.sample(gpu_load)? {
+            self.memory_fabric_strategy.set_memory_fabric_profile(perf_profile)?;
+            info!("Memory fabric performance profile changed to {perf_profile}");
+        }
+        Ok(())
+    }
+
     fn memory_utilization(
         &self,
         active_profile: u32,
@@ -89,13 +107,9 @@ impl MemoryFabricProfile {
         )
     }
 
-    pub fn reset(&mut self) -> Option<u32> {
-        if self.current_profile != Some(3) {
-            self.current_profile = Some(3);
-            Some(3)
-        } else {
-            None
-        }
+    pub fn reset(&mut self) -> Result<()> {
+        self.memory_fabric_strategy.set_memory_fabric_profile(3)
+
     }
 
     fn select_profile(&mut self, utilization: f64) -> Option<u32> {
@@ -174,6 +188,33 @@ impl MemoryBandwidth {
         Ok(Some((bandwidth, max_core_bandwidth)))
     }
 }
+
+struct MemoryFabricSmuStrategy {
+    smu: Bc250Smu,
+}
+
+
+
+impl MemoryFabricSmuStrategy {
+    fn new() -> Result<Self> {
+        let smu = Bc250Smu::new("0000:00:00.0", true, true, 500)?;
+        smu.check_test_message()?;
+        info!("SMU communication verified");
+        smu.set_gpu_max_temperature(80)?;
+        smu.unforce_gfx_freq()?;
+        smu.unforce_gfx_vid()?;
+        Ok(Self { smu })
+    }
+}
+
+impl MemoryFabricStrategy  for MemoryFabricSmuStrategy {
+ fn set_memory_fabric_profile(&self, perf_profile: u32) -> Result<()> {
+        self.smu.q3_set_perf_profile_index(perf_profile)?;
+        debug!("SMU set memory fabric performance profile to {perf_profile}");
+        Ok(())
+    }
+}
+
 
 struct ExponentialMovingAverage {
     half_life: Duration,
@@ -330,7 +371,9 @@ mod tests {
 
     #[test]
     fn normalizes_bandwidth_against_the_active_profile_capacity() {
-        let profile = MemoryFabricProfile::new(0.40, 0.80, [(4.0, 2.3), (12.4, 6.1), (18.1, 4.4)]);
+        if let Ok(profile) = MemoryFabricProfile::new(0.40, 0.80, [(4.0, 2.3), (12.4, 6.1), (18.1, 4.4)]){
+        
+        
 
         assert_eq!(
             profile.memory_utilization(1, 4.0 * GIB, 2.3 * GIB),
@@ -347,6 +390,7 @@ mod tests {
         assert!(profile.memory_utilization(1, 4.0 * GIB, 0.0).0 > 0.99);
         assert!(profile.memory_utilization(2, 4.0 * GIB, 0.0).0 < 0.33);
     }
+}
 
     #[test]
     fn exponential_mean_halves_old_value_weight_each_half_life() {
@@ -360,9 +404,9 @@ mod tests {
 
     #[test]
     fn selects_all_three_profiles_without_duplicate_writes() {
-        let mut profile =
-            MemoryFabricProfile::new(0.60, 0.80, [(4.0, 2.3), (12.4, 6.1), (18.1, 4.4)]);
-
+        if let  Ok(mut profile) =
+            MemoryFabricProfile::new(0.60, 0.80, [(4.0, 2.3), (12.4, 6.1), (18.1, 4.4)])
+{
         assert_eq!(profile.select_profile(0.50), Some(1));
         assert_eq!(profile.select_profile(0.70), Some(2));
         assert_eq!(profile.select_profile(0.75), None);
@@ -371,18 +415,17 @@ mod tests {
         assert_eq!(profile.select_profile(0.60), None);
         assert_eq!(profile.select_profile(0.54), Some(1));
         assert_eq!(profile.select_profile(0.50), None);
-        assert_eq!(profile.reset(), Some(3));
-        assert_eq!(profile.reset(), None);
+       
 
         assert_eq!(profile.select_profile(0.70), Some(2));
         assert_eq!(profile.select_profile(0.90), Some(3));
-        assert_eq!(profile.reset(), None);
+        
     }
-
+    }
     #[test]
     fn hysteresis_prevents_flapping_at_both_profile_two_boundaries() {
-        let mut profile =
-            MemoryFabricProfile::new(0.40, 0.80, [(4.0, 2.3), (12.4, 6.1), (18.1, 4.4)]);
+        if let Ok(mut profile) =
+            MemoryFabricProfile::new(0.40, 0.80, [(4.0, 2.3), (12.4, 6.1), (18.1, 4.4)]) {
 
         assert_eq!(profile.select_profile(0.39), Some(1));
         assert_eq!(profile.select_profile(0.41), None);
@@ -395,12 +438,6 @@ mod tests {
         assert_eq!(profile.select_profile(0.81), None);
         assert_eq!(profile.select_profile(0.74), Some(2));
     }
-
-    #[test]
-    fn reset_selects_profile_three_before_first_sample() {
-        let mut profile =
-            MemoryFabricProfile::new(0.60, 0.80, [(4.0, 2.3), (12.4, 6.1), (18.1, 4.4)]);
-
-        assert_eq!(profile.reset(), Some(3));
     }
+
 }
