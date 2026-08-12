@@ -22,8 +22,6 @@ const DEFAULT_QUEUE_ADDRS: [(u8, (u32, u32, u32)); 5] = [
 
 pub struct Bc250Smu {
     allow_queue0: bool,
-    #[allow(dead_code)]
-    transport: Arc<Bc250PciTransport>,
     queues: HashMap<u8, Bc250Mailbox>,
 }
 
@@ -35,12 +33,14 @@ impl Bc250Smu {
 
         let mut queues = HashMap::new();
         for (queue, (cmd, rsp, arg)) in DEFAULT_QUEUE_ADDRS {
-            queues.insert(queue, Bc250Mailbox::new(&transport, cmd, rsp, arg, timeout));
+            queues.insert(
+                queue,
+                Bc250Mailbox::new(Arc::clone(&transport), cmd, rsp, arg, timeout),
+            );
         }
 
         Ok(Self {
             allow_queue0,
-            transport,
             queues,
         })
     }

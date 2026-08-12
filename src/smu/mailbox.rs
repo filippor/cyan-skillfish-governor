@@ -1,6 +1,6 @@
 use super::smu_errors::{Result, SmuError};
 use super::transport::Bc250PciTransport;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -26,7 +26,7 @@ impl SmuStatus {
 }
 
 pub struct Bc250Mailbox {
-    transport: *const Bc250PciTransport,
+    transport: Arc<Bc250PciTransport>,
     cmd_addr: u32,
     rsp_addr: u32,
     arg_addr: u32,
@@ -34,21 +34,16 @@ pub struct Bc250Mailbox {
     lock: Mutex<()>,
 }
 
-// Safety: The transport pointer is guaranteed to outlive the mailbox
-// because mailboxes are owned by Bc250Smu which owns the transport
-unsafe impl Send for Bc250Mailbox {}
-unsafe impl Sync for Bc250Mailbox {}
-
 impl Bc250Mailbox {
     pub fn new(
-        transport: &Bc250PciTransport,
+        transport: Arc<Bc250PciTransport>,
         cmd_addr: u32,
         rsp_addr: u32,
         arg_addr: u32,
         timeout: u32,
     ) -> Self {
         Self {
-            transport: transport as *const _,
+            transport,
             cmd_addr,
             rsp_addr,
             arg_addr,
@@ -59,7 +54,7 @@ impl Bc250Mailbox {
 
     pub fn send(&self, msg_id: u32, arg: u32, arg_high: Option<u32>) -> Result<SmuStatus> {
         let _guard = self.lock.lock().unwrap();
-        let transport = unsafe { &*self.transport };
+        let transport = &self.transport;
 
         transport.write_smu_reg(self.rsp_addr, 0)?;
         transport.write_smu_reg(self.arg_addr, arg)?;
@@ -71,18 +66,18 @@ impl Bc250Mailbox {
 
     pub fn read_arg(&self) -> Result<u32> {
         let _guard = self.lock.lock().unwrap();
-        let transport = unsafe { &*self.transport };
+        let transport = &self.transport;
         transport.read_smu_reg(self.arg_addr)
     }
 
     pub fn read_arg_high(&self) -> Result<u32> {
         let _guard = self.lock.lock().unwrap();
-        let transport = unsafe { &*self.transport };
+        let transport = &self.transport;
         transport.read_smu_reg(self.arg_addr + 4)
     }
 
     fn wait_done(&self) -> Result<SmuStatus> {
-        let transport = unsafe { &*self.transport };
+        let transport = &self.transport;
         let mut remaining = self.timeout;
 
         while remaining > 0 {
