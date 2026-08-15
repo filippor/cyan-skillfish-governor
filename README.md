@@ -204,6 +204,22 @@ Top-level keys:
 - `gpu`
   - `set-method` (`"smu"` or `"kernel"`, default: `"smu"`): backend used to apply frequency/voltage.
 
+- `memory-fabric-profile`
+  - `enabled` (bool, default: `false`): select SMU performance profiles from GPU usage and CPU-originated DRAM bandwidth. 
+  - `profile-1-bandwidth-scale-gib` / `profile-1-core-bandwidth-scale-gib` (GiB/s, defaults: `4.0` / `2.3`): aggregate and maximum per-core DRAM bandwidth represented by utilization `1.0` while profile `1` is active.
+  - `profile-2-bandwidth-scale-gib` / `profile-2-core-bandwidth-scale-gib` (GiB/s, defaults: `12.4` / `6.1`): profile `2` capacities.
+  - `profile-3-bandwidth-scale-gib` / `profile-3-core-bandwidth-scale-gib` (GiB/s, defaults: `18.1` / `4.4`): profile `3` capacities. The non-monotonic per-core defaults reflect measured BC-250 behavior.
+    - Experimental: the underlying SMU queue 3 message `0x1E` is not fully understood and may cause a hardware reset. It is disabled in the example configuration.
+  - `lower-utilization` (fraction, default: `0.60`): boundary between profiles `1` and `2`.
+  - `upper-utilization` (fraction, default: `0.70`): boundary between profiles `2` and `3`.
+  - Profile decisions normalize bandwidth against the currently active profile's capacities, take the greatest of GPU usage, aggregate DRAM bandwidth, and maximum per-core DRAM bandwidth, then apply one time-aware EWMA with a 500 ms half-life.
+  - A fixed utilization hysteresis of `0.05` prevents rapid profile changes near either threshold.
+    - Profile `1`: approximately 450 MHz, deepest idle; reduces system power by roughly 20 W.
+    - Profile `2`: approximately 850 MHz, intermediate.
+    - Profile `3`: approximately 1750 MHz, active/baseline.
+  - On graceful shutdown, profile `3` is restored.
+  - CPU DRAM reads are estimated from Zen 2 demand and prefetch refill PMU counters. GPU usage covers GPU-side demand because UMC activity is unavailable; the greater smoothed utilization controls the profile.
+
 - `dbus`
   - `enabled` (bool, default: `false`): enable D-Bus performance-mode service.
 

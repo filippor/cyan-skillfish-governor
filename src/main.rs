@@ -6,6 +6,7 @@ mod governor;
 mod gpu;
 mod gpu_frequency_fix;
 mod gpu_usage_fix;
+mod memory_fabric_profile;
 use app_error::{AppError, Result};
 use clap::Parser;
 use clap_verbosity_flag::{InfoLevel, Verbosity};
@@ -15,6 +16,8 @@ use gpu::GPU;
 use gpu_frequency_fix::GpuFrequencyFix;
 use gpu_usage_fix::GpuUsageFix;
 use log::info;
+use log::warn;
+use memory_fabric_profile::MemoryFabricProfile;
 use signal_hook::consts::signal::*;
 use signal_hook::iterator::Signals;
 use std::sync::mpsc::{self, Sender};
@@ -46,6 +49,12 @@ fn main() -> Result<()> {
 
     let config = load_config(args.config_path.as_deref())?;
 
+    if config.memory_fabric_profile.is_some() {
+        warn!(
+            "Experimental memory fabric profiles are enabled; SMU queue 3 message 0x1E is not fully understood and may cause a hardware reset"
+        );
+    }
+
     let gpu = GPU::new(
         config.safe_points.clone(),
         config.gpu.set_method,
@@ -53,6 +62,21 @@ fn main() -> Result<()> {
         config.timing.sampling_interval,
     )?;
     let params: GovernorParams = config.to_governor_params(&gpu);
+    
+
+    
+    let mut memory_fabric_profile = config.memory_fabric_profile.and_then(|profile| {
+        MemoryFabricProfile::new(
+            profile.lower_utilization,
+            profile.upper_utilization,
+            profile.capacities.map(|capacity| {
+                (
+                    capacity.bandwidth_scale_gib,
+                    capacity.core_bandwidth_scale_gib,
+                )
+            }),
+        ).ok()
+    }).unwrap_or(None);
 
     let gpu_usage_fix = if config.gpu_usage.fix_metrics {
         info!("GPU usage metrics fix enabled");
@@ -88,15 +112,17 @@ fn main() -> Result<()> {
             break;
         }
 
-        governor
+        let mut governor = governor
             .lock()
-            .map_err(|_| AppError::from("governor lock poisoned"))?
-            .run_iteration()?;
+            .map_err(|_| AppError::from("governor lock poisoned"))?;
+        let gpu_load = governor.run_iteration()?;
 
-        let target_cycle_interval = governor
-            .lock()
-            .map_err(|_| AppError::from("governor lock poisoned"))?
-            .target_cycle_interval();
+        if let Some(memory_fabric_profile) = memory_fabric_profile.as_mut() {
+            memory_fabric_profile.update_profile(gpu_load)?;
+        }
+
+        let target_cycle_interval = governor.target_cycle_interval();
+        drop(governor);
         let elapsed = loop_start.elapsed();
         if elapsed < target_cycle_interval {
             std::thread::sleep(target_cycle_interval - elapsed);
@@ -104,10 +130,14 @@ fn main() -> Result<()> {
     }
 
     info!("Shutting down gracefully...");
-    governor
-        .lock()
-        .expect("governor lock poisoned")
-        .shutdown()?;
+    let mut governor = governor.lock().expect("governor lock poisoned");
+    if let Some(memory_fabric_profile) = memory_fabric_profile
+        .as_mut()
+        
+    {
+        memory_fabric_profile.reset()?;
+    }
+    governor.shutdown()?;
     Ok(())
 }
 
@@ -119,7 +149,7 @@ fn init_logger(verbose: Verbosity<InfoLevel>) {
 }
 
 fn install_signal_handler(shutdown_tx: Sender<()>) -> Result<()> {
-    let mut signals = Signals::new(&[SIGINT, SIGTERM])?;
+    let mut signals = Signals::new([SIGINT, SIGTERM])?;
     std::thread::spawn(move || {
         for _sig in signals.forever() {
             let _ = shutdown_tx.send(());

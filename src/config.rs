@@ -51,6 +51,7 @@ pub struct Config {
     pub gpu: GpuConfig,
     pub dbus: DbusConfig,
     pub frequency_range: FrequencyRangeConfig,
+    pub memory_fabric_profile: Option<MemoryFabricProfileConfig>,
 }
 
 pub struct TimingConfig {
@@ -97,6 +98,18 @@ pub struct FrequencyRangeConfig {
     pub max: Option<u32>,
 }
 
+pub struct MemoryFabricProfileConfig {
+    pub lower_utilization: f64,
+    pub upper_utilization: f64,
+    pub capacities: [MemoryFabricProfileCapacityConfig; 3],
+}
+
+#[derive(Clone, Copy)]
+pub struct MemoryFabricProfileCapacityConfig {
+    pub bandwidth_scale_gib: f64,
+    pub core_bandwidth_scale_gib: f64,
+}
+
 pub struct GovernorParams {
     pub burst_freq_step: u32,
     pub freq_step: u32,
@@ -130,6 +143,7 @@ impl Config {
             },
             dbus: parse_dbus_config(&config),
             frequency_range: parse_frequency_range_config(&config),
+            memory_fabric_profile: parse_memory_fabric_profile_config(&config),
         })
     }
 
@@ -567,6 +581,81 @@ fn parse_frequency_range_config(config: &Table) -> FrequencyRangeConfig {
     FrequencyRangeConfig { min, max }
 }
 
+fn parse_memory_fabric_profile_config(config: &Table) -> Option<MemoryFabricProfileConfig> {
+    let profile = config
+        .get("memory-fabric-profile")
+        .and_then(|value| value.as_table());
+    let enabled = profile
+        .and_then(|table| table.get("enabled"))
+        .and_then(|value| value.as_bool())
+        .unwrap_or(false);
+    if !enabled {
+        return None;
+    }
+
+    let upper_utilization = parse_float_in_range_optional(
+        profile,
+        "upper-utilization",
+        "memory-fabric-profile.upper-utilization",
+        0.0..=1.0,
+        Some(0.70),
+        Some(0.70),
+    )
+    .unwrap();
+    let lower_utilization = parse_float_in_range_optional(
+        profile,
+        "lower-utilization",
+        "memory-fabric-profile.lower-utilization",
+        0.0..=1.0,
+        Some(0.60),
+        Some(0.60),
+    )
+    .unwrap()
+    .min(upper_utilization);
+    let capacities = [
+        parse_memory_fabric_profile_capacity(profile, 1, 4.0, 2.3),
+        parse_memory_fabric_profile_capacity(profile, 2, 12.4, 6.1),
+        parse_memory_fabric_profile_capacity(profile, 3, 18.1, 4.4),
+    ];
+    Some(MemoryFabricProfileConfig {
+        lower_utilization,
+        upper_utilization,
+        capacities,
+    })
+}
+
+fn parse_memory_fabric_profile_capacity(
+    profile: Option<&Table>,
+    profile_index: u32,
+    default_bandwidth: f64,
+    default_core_bandwidth: f64,
+) -> MemoryFabricProfileCapacityConfig {
+    let bandwidth_key = format!("profile-{profile_index}-bandwidth-scale-gib");
+    let core_bandwidth_key = format!("profile-{profile_index}-core-bandwidth-scale-gib");
+    let bandwidth_scale_gib = parse_float_in_range_optional(
+        profile,
+        &bandwidth_key,
+        &format!("memory-fabric-profile.{bandwidth_key}"),
+        0.1..=1000.0,
+        Some(default_bandwidth),
+        Some(default_bandwidth),
+    )
+    .unwrap();
+    let core_bandwidth_scale_gib = parse_float_in_range_optional(
+        profile,
+        &core_bandwidth_key,
+        &format!("memory-fabric-profile.{core_bandwidth_key}"),
+        0.1..=1000.0,
+        Some(default_core_bandwidth),
+        Some(default_core_bandwidth),
+    )
+    .unwrap();
+    MemoryFabricProfileCapacityConfig {
+        bandwidth_scale_gib,
+        core_bandwidth_scale_gib,
+    }
+}
+
 fn nested_table<'a>(table: Option<&'a Table>, key: &str) -> Option<&'a Table> {
     table
         .and_then(|t| t.get(key))
@@ -701,6 +790,55 @@ mod tests {
         assert!(matches!(cfg.gpu.set_method, GpuSetMethod::Smu));
         assert_eq!(cfg.safe_points.get(&350), Some(&700));
         assert_eq!(cfg.safe_points.get(&2000), Some(&1000));
+        assert!(cfg.memory_fabric_profile.is_none());
+    }
+
+    #[test]
+    fn parses_memory_fabric_profile() {
+        let cfg = parse_config(
+            r#"
+            [memory-fabric-profile]
+            enabled = true
+            lower-utilization = 0.55
+            upper-utilization = 0.75
+            profile-1-bandwidth-scale-gib = 4.1
+            profile-1-core-bandwidth-scale-gib = 2.4
+            profile-2-bandwidth-scale-gib = 12.5
+            profile-2-core-bandwidth-scale-gib = 6.2
+            profile-3-bandwidth-scale-gib = 18.2
+            profile-3-core-bandwidth-scale-gib = 4.5
+            "#,
+        );
+        let profile = cfg.memory_fabric_profile.unwrap();
+
+        assert_eq!(profile.lower_utilization, 0.55);
+        assert_eq!(profile.upper_utilization, 0.75);
+        assert_eq!(profile.capacities[0].bandwidth_scale_gib, 4.1);
+        assert_eq!(profile.capacities[0].core_bandwidth_scale_gib, 2.4);
+        assert_eq!(profile.capacities[1].bandwidth_scale_gib, 12.5);
+        assert_eq!(profile.capacities[1].core_bandwidth_scale_gib, 6.2);
+        assert_eq!(profile.capacities[2].bandwidth_scale_gib, 18.2);
+        assert_eq!(profile.capacities[2].core_bandwidth_scale_gib, 4.5);
+    }
+
+    #[test]
+    fn memory_fabric_profile_uses_default_thresholds() {
+        let cfg = parse_config(
+            r#"
+            [memory-fabric-profile]
+            enabled = true
+            "#,
+        );
+        let profile = cfg.memory_fabric_profile.unwrap();
+
+        assert_eq!(profile.lower_utilization, 0.60);
+        assert_eq!(profile.upper_utilization, 0.70);
+        assert_eq!(profile.capacities[0].bandwidth_scale_gib, 4.0);
+        assert_eq!(profile.capacities[0].core_bandwidth_scale_gib, 2.3);
+        assert_eq!(profile.capacities[1].bandwidth_scale_gib, 12.4);
+        assert_eq!(profile.capacities[1].core_bandwidth_scale_gib, 6.1);
+        assert_eq!(profile.capacities[2].bandwidth_scale_gib, 18.1);
+        assert_eq!(profile.capacities[2].core_bandwidth_scale_gib, 4.4);
     }
 
     #[test]
