@@ -26,6 +26,30 @@ impl GpuUsageMethod {
     }
 }
 
+/// Where the GPU temperature is read from.
+///
+/// Both sources resolve to the same sensor. The ioctl asks for
+/// `AMDGPU_PP_SENSOR_GPU_TEMP` and hwmon's `temp1_input` asks for
+/// `AMDGPU_PP_SENSOR_EDGE_TEMP`, and the kernel defines
+/// `AMDGPU_PP_SENSOR_EDGE_TEMP = AMDGPU_PP_SENSOR_GPU_TEMP`, so both end up in
+/// the same `cyan_skillfish_read_sensor` case returning the same millidegrees.
+/// `Sysfs` exists so the governor does not have to hold a DRM device handle
+/// open purely to read one integer per control loop.
+#[derive(Clone, Copy, Debug)]
+pub enum GpuTempRead {
+    Drm,
+    Sysfs,
+}
+
+impl GpuTempRead {
+    pub fn as_config_value(self) -> &'static str {
+        match self {
+            Self::Drm => "drm",
+            Self::Sysfs => "sysfs",
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug)]
 pub enum GpuSetMethod {
     Smu,
@@ -82,6 +106,7 @@ pub struct GpuUsageConfig {
     pub fix_freq: bool,
     pub flush_every: u32,
     pub method: GpuUsageMethod,
+    pub temp_read: GpuTempRead,
 }
 
 pub struct GpuConfig {
@@ -498,11 +523,25 @@ fn parse_gpu_usage_config(config: &Table) -> GpuUsageConfig {
         _ => GpuUsageMethod::BusyFlag,
     };
 
+    let gpu_temp_read = match gpu_usage
+        .and_then(|t| t.get("temp-read").or_else(|| t.get("temp_read")))
+        .and_then(|v| v.as_str())
+    {
+        Some("drm") => GpuTempRead::Drm,
+        Some("sysfs") => GpuTempRead::Sysfs,
+        Some(other) => {
+            warn!("gpu-usage.temp-read '{}' is invalid, using default drm", other);
+            GpuTempRead::Drm
+        }
+        _ => GpuTempRead::Drm,
+    };
+
     GpuUsageConfig {
         fix_metrics: gpu_metric_fix,
         fix_freq: gpu_freq_fix,
         flush_every: gpu_metric_fix_flush_every,
         method: gpu_usage_method,
+        temp_read: gpu_temp_read,
     }
 }
 

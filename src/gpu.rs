@@ -1,11 +1,18 @@
 use crate::app_error::{AppError, Result};
-use crate::config::{GpuSetMethod, GpuUsageMethod};
+use crate::config::{GpuSetMethod, GpuTempRead, GpuUsageMethod};
 use cyan_skillfish_governor_smu::Bc250Smu;
 use libdrm_amdgpu_sys::{AMDGPU::DeviceHandle, PCI::BUS_INFO};
 use log::debug;
 use log::info;
+use log::warn;
 
-use std::{collections::BTreeMap, fs::File, io::Error as IoError, path::PathBuf, time::Duration};
+use std::{
+    collections::BTreeMap,
+    fs::File,
+    io::Error as IoError,
+    path::{Path, PathBuf},
+    time::Duration,
+};
 
 #[path = "gpu/kernel_freq_strategy.rs"]
 mod kernel_freq_strategy;
@@ -32,8 +39,16 @@ trait UsageStrategy: Send {
     fn poll_and_get_load(&mut self) -> Result<(f32, u32)>;
 }
 
+/// Where `read_temperature` gets its value from, chosen by
+/// `gpu-usage.temp-read`. `Drm` keeps a device handle open for the life of the
+/// process; `Sysfs` holds only a path and opens the file per read.
+enum TempSource {
+    Drm(DeviceHandle),
+    Sysfs(PathBuf),
+}
+
 pub struct GPU {
-    dev_handle: DeviceHandle,
+    temp_source: TempSource,
     pub min_freq: u32,
     pub max_freq: u32,
     freq_strategy: Box<dyn FreqStrategy + Send>,
@@ -47,6 +62,7 @@ impl GPU {
         safe_points: BTreeMap<u32, u32>,
         gpu_set_method: GpuSetMethod,
         gpu_usage_method: GpuUsageMethod,
+        gpu_temp_read: GpuTempRead,
         sampling_interval: Duration,
     ) -> Result<GPU> {
         let location = BUS_INFO {
@@ -57,9 +73,10 @@ impl GPU {
         };
         validate_device_identity(&location)?;
         info!(
-            "GPU usage method: {} set method: {}",
+            "GPU usage method: {} set method: {} temperature read: {}",
             gpu_usage_method.as_config_value(),
-            gpu_set_method.as_config_value()
+            gpu_set_method.as_config_value(),
+            gpu_temp_read.as_config_value()
         );
 
         let freq_strategy: Box<dyn FreqStrategy + Send> = match gpu_set_method {
@@ -87,7 +104,7 @@ impl GPU {
         };
 
         Ok(GPU {
-            dev_handle: init_device_handle(location.get_drm_render_path()?)?,
+            temp_source: init_temp_source(gpu_temp_read, &location)?,
             min_freq: *safe_points
                 .first_key_value()
                 .ok_or_else(|| IoError::other("safe_points cannot be empty"))?
@@ -112,11 +129,36 @@ impl GPU {
     }
 
     pub fn read_temperature(&mut self) -> Result<u32> {
-        let temp = self
-            .dev_handle
-            .sensor_info(libdrm_amdgpu_sys::AMDGPU::SENSOR_INFO::SENSOR_TYPE::GPU_TEMP)
-            .map_err(IoError::from_raw_os_error)?;
-        Ok((temp / 1000) as u32)
+        // A sysfs read that starts failing mid-run demotes the source rather
+        // than killing the control loop: the temperature only drives thermal
+        // throttling, and losing it would stop the governor entirely.
+        if let TempSource::Sysfs(path) = &self.temp_source {
+            match read_hwmon_millidegrees(path) {
+                Ok(millidegrees) => return Ok(millidegrees_to_celsius(millidegrees)),
+                Err(e) => {
+                    warn!(
+                        "gpu-usage.temp-read = \"sysfs\": {e}; falling back to the DRM ioctl for the rest of this run"
+                    );
+                    self.temp_source =
+                        TempSource::Drm(init_device_handle(self.location.get_drm_render_path()?)?);
+                }
+            }
+        }
+
+        match &self.temp_source {
+            TempSource::Drm(dev_handle) => {
+                let temp = dev_handle
+                    .sensor_info(libdrm_amdgpu_sys::AMDGPU::SENSOR_INFO::SENSOR_TYPE::GPU_TEMP)
+                    .map_err(IoError::from_raw_os_error)?;
+                Ok(millidegrees_to_celsius(i64::from(temp)))
+            }
+            // Demoted to Drm just above, so this cannot be reached.
+            TempSource::Sysfs(path) => Err(IoError::other(format!(
+                "temperature source {} unexpectedly still sysfs",
+                path.display()
+            ))
+            .into()),
+        }
     }
 
     pub fn change_freq(&mut self, freq: u32) -> Result<()> {
@@ -183,6 +225,91 @@ fn validate_device_identity(location: &BUS_INFO) -> Result<()> {
     Err(AppError::from(
         "Cyan Skillfish GPU not found at expected PCI bus location",
     ))
+}
+
+/// Plausible range for an edge temperature, in millidegrees C. Anything
+/// outside it is treated as an unusable reading rather than passed on -- a
+/// bogus value here would feed straight into thermal throttling.
+const TEMP_MIN_MILLIDEGREES: i64 = -40_000;
+const TEMP_MAX_MILLIDEGREES: i64 = 150_000;
+
+fn millidegrees_to_celsius(millidegrees: i64) -> u32 {
+    (millidegrees / 1000).max(0) as u32
+}
+
+/// Read one temperature from an amdgpu hwmon `temp1_input`, rejecting anything
+/// that is missing, unreadable, not an integer, or out of plausible range.
+fn read_hwmon_millidegrees(path: &Path) -> Result<i64> {
+    let raw = std::fs::read_to_string(path)
+        .map_err(|e| IoError::other(format!("{}: {e}", path.display())))?;
+    let millidegrees: i64 = raw.trim().parse().map_err(|_| {
+        IoError::other(format!(
+            "{} did not contain an integer: {:?}",
+            path.display(),
+            raw.trim()
+        ))
+    })?;
+
+    if !(TEMP_MIN_MILLIDEGREES..=TEMP_MAX_MILLIDEGREES).contains(&millidegrees) {
+        return Err(IoError::other(format!(
+            "{} reported an implausible temperature: {} millidegrees C",
+            path.display(),
+            millidegrees
+        ))
+        .into());
+    }
+
+    Ok(millidegrees)
+}
+
+/// Pick the temperature source, degrading to the DRM ioctl if sysfs is not
+/// usable.
+///
+/// The hwmon attribute is plain upstream amdgpu -- `temp1_input` is registered
+/// for every ASIC except multi-AID parts, and Cyan Skillfish already implements
+/// `AMDGPU_PP_SENSOR_EDGE_TEMP` in a stock kernel -- so this normally succeeds.
+/// It is probed once anyway rather than trusted, so a kernel that does not
+/// expose it costs a warning instead of a governor that will not start.
+fn init_temp_source(gpu_temp_read: GpuTempRead, location: &BUS_INFO) -> Result<TempSource> {
+    if let GpuTempRead::Sysfs = gpu_temp_read {
+        match find_hwmon_temp_input(&location.get_sysfs_path())
+            .and_then(|path| read_hwmon_millidegrees(&path).map(|_| path))
+        {
+            Ok(path) => {
+                info!("reading GPU temperature from {}", path.display());
+                return Ok(TempSource::Sysfs(path));
+            }
+            Err(e) => warn!(
+                "gpu-usage.temp-read = \"sysfs\" is not usable: {e}; using the DRM ioctl instead"
+            ),
+        }
+    }
+
+    Ok(TempSource::Drm(init_device_handle(
+        location.get_drm_render_path()?,
+    )?))
+}
+
+/// Locate the amdgpu hwmon temperature input for this device.
+///
+/// Resolved once rather than per read: the hwmon index is stable for the life
+/// of the bound device, and a readdir on every control loop would be wasteful.
+fn find_hwmon_temp_input(sysfs_path: &Path) -> Result<PathBuf> {
+    let hwmon_root = sysfs_path.join("hwmon");
+    let mut candidates: Vec<PathBuf> = std::fs::read_dir(&hwmon_root)
+        .map_err(|e| IoError::other(format!("{}: {e}", hwmon_root.display())))?
+        .filter_map(|entry| entry.ok())
+        .map(|entry| entry.path().join("temp1_input"))
+        .filter(|path| path.is_file())
+        .collect();
+    candidates.sort();
+
+    candidates.into_iter().next().ok_or_else(|| {
+        AppError::from(format!(
+            "no hwmon temp1_input under {}",
+            hwmon_root.display()
+        ))
+    })
 }
 
 fn init_device_handle(render_path: PathBuf) -> Result<DeviceHandle> {
