@@ -6,6 +6,7 @@ adjust = 200_000
 [gpu-usage]
 fix-metrics = true
 method = "process" # "busy-flag" or "process"
+temp-read = "drm" # "drm" or "sysfs"
 flush-every = 10
 
 [gpu]

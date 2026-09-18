@@ -50,6 +50,7 @@ fn main() -> Result<()> {
         config.safe_points.clone(),
         config.gpu.set_method,
         config.gpu_usage.method,
+        config.gpu_usage.temp_read,
         config.timing.sampling_interval,
     )?;
     let params: GovernorParams = config.to_governor_params(&gpu);
