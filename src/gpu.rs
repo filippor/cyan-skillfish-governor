@@ -42,10 +42,27 @@ trait UsageStrategy: Send {
 /// Where `read_temperature` gets its value from, chosen by
 /// `gpu-usage.temp-read`. `Drm` keeps a device handle open for the life of the
 /// process; `Sysfs` holds only a path and opens the file per read.
+///
+/// `Sysfs` also carries the last good reading and a consecutive-failure count,
+/// so a transient read error can be ridden out instead of permanently giving
+/// up on the source. See `read_temperature`.
 enum TempSource {
     Drm(DeviceHandle),
-    Sysfs(PathBuf),
+    Sysfs {
+        path: PathBuf,
+        last_good: i64,
+        failures: u32,
+    },
 }
+
+/// How many reads in a row have to fail before the sysfs source is abandoned.
+///
+/// One failure means nothing: the value only drives thermal throttling, and a
+/// reading a few hundred milliseconds stale serves that just as well. Demoting
+/// is the expensive outcome, not the error -- it reopens the DRM render node
+/// for the rest of the run, which is the thing `temp-read = "sysfs"` exists to
+/// avoid.
+const TEMP_SYSFS_MAX_CONSECUTIVE_FAILURES: u32 = 5;
 
 pub struct GPU {
     temp_source: TempSource,
@@ -129,20 +146,48 @@ impl GPU {
     }
 
     pub fn read_temperature(&mut self) -> Result<u32> {
-        // A sysfs read that starts failing mid-run demotes the source rather
-        // than killing the control loop: the temperature only drives thermal
+        // A sysfs read that starts failing mid-run degrades rather than
+        // killing the control loop: the temperature only drives thermal
         // throttling, and losing it would stop the governor entirely.
-        if let TempSource::Sysfs(path) = &self.temp_source {
+        //
+        // A single failure is ridden out with the last good reading. Only
+        // TEMP_SYSFS_MAX_CONSECUTIVE_FAILURES in a row demote the source,
+        // because demoting is itself disruptive -- it opens the DRM render
+        // node for the rest of the run.
+        let mut demote = false;
+
+        if let TempSource::Sysfs {
+            path,
+            last_good,
+            failures,
+        } = &mut self.temp_source
+        {
             match read_hwmon_millidegrees(path) {
-                Ok(millidegrees) => return Ok(millidegrees_to_celsius(millidegrees)),
+                Ok(millidegrees) => {
+                    *last_good = millidegrees;
+                    *failures = 0;
+                    return Ok(millidegrees_to_celsius(millidegrees));
+                }
                 Err(e) => {
+                    *failures += 1;
+                    if *failures < TEMP_SYSFS_MAX_CONSECUTIVE_FAILURES {
+                        warn!(
+                            "gpu-usage.temp-read = \"sysfs\": {e}; reusing the last good reading ({} failure(s) in a row, demoting at {TEMP_SYSFS_MAX_CONSECUTIVE_FAILURES})",
+                            *failures
+                        );
+                        return Ok(millidegrees_to_celsius(*last_good));
+                    }
                     warn!(
-                        "gpu-usage.temp-read = \"sysfs\": {e}; falling back to the DRM ioctl for the rest of this run"
+                        "gpu-usage.temp-read = \"sysfs\": {e}; {TEMP_SYSFS_MAX_CONSECUTIVE_FAILURES} reads in a row failed, falling back to the DRM ioctl for the rest of this run"
                     );
-                    self.temp_source =
-                        TempSource::Drm(init_device_handle(self.location.get_drm_render_path()?)?);
+                    demote = true;
                 }
             }
+        }
+
+        if demote {
+            self.temp_source =
+                TempSource::Drm(init_device_handle(self.location.get_drm_render_path()?)?);
         }
 
         match &self.temp_source {
@@ -153,7 +198,7 @@ impl GPU {
                 Ok(millidegrees_to_celsius(i64::from(temp)))
             }
             // Demoted to Drm just above, so this cannot be reached.
-            TempSource::Sysfs(path) => Err(IoError::other(format!(
+            TempSource::Sysfs { path, .. } => Err(IoError::other(format!(
                 "temperature source {} unexpectedly still sysfs",
                 path.display()
             ))
@@ -272,12 +317,19 @@ fn read_hwmon_millidegrees(path: &Path) -> Result<i64> {
 /// expose it costs a warning instead of a governor that will not start.
 fn init_temp_source(gpu_temp_read: GpuTempRead, location: &BUS_INFO) -> Result<TempSource> {
     if let GpuTempRead::Sysfs = gpu_temp_read {
+        // The probe read is kept, not discarded: it seeds `last_good`, so a
+        // failure on the very first control cycle already has something
+        // sensible to fall back on.
         match find_hwmon_temp_input(&location.get_sysfs_path())
-            .and_then(|path| read_hwmon_millidegrees(&path).map(|_| path))
+            .and_then(|path| read_hwmon_millidegrees(&path).map(|millidegrees| (path, millidegrees)))
         {
-            Ok(path) => {
+            Ok((path, millidegrees)) => {
                 info!("reading GPU temperature from {}", path.display());
-                return Ok(TempSource::Sysfs(path));
+                return Ok(TempSource::Sysfs {
+                    path,
+                    last_good: millidegrees,
+                    failures: 0,
+                });
             }
             Err(e) => warn!(
                 "gpu-usage.temp-read = \"sysfs\" is not usable: {e}; using the DRM ioctl instead"
@@ -396,8 +448,62 @@ impl UsageStrategy for BusyFlagUsageStrategy {
 
 #[cfg(test)]
 mod tests {
-    use super::voltage_for_freq;
+    use super::{TEMP_MAX_MILLIDEGREES, read_hwmon_millidegrees, voltage_for_freq};
     use std::collections::BTreeMap;
+    use std::path::PathBuf;
+
+    /// Write `contents` to a uniquely named file and hand back its path.
+    ///
+    /// The crate has no dev-dependencies and this is the only test that needs a
+    /// file on disk, so a counter plus the pid is cheaper than pulling in a
+    /// temporary-file crate.
+    fn temp_file_with(contents: &str) -> PathBuf {
+        use std::sync::atomic::{AtomicU32, Ordering};
+        static COUNTER: AtomicU32 = AtomicU32::new(0);
+
+        let path = std::env::temp_dir().join(format!(
+            "cs-governor-hwmon-test-{}-{}",
+            std::process::id(),
+            COUNTER.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::write(&path, contents).expect("failed to write test file");
+        path
+    }
+
+    #[test]
+    fn read_hwmon_accepts_a_plausible_reading() {
+        let path = temp_file_with("45000\n");
+
+        assert_eq!(read_hwmon_millidegrees(&path).unwrap(), 45000);
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn read_hwmon_rejects_an_implausible_reading() {
+        let path = temp_file_with(&format!("{}\n", TEMP_MAX_MILLIDEGREES + 1));
+
+        assert!(read_hwmon_millidegrees(&path).is_err());
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn read_hwmon_rejects_a_non_integer_reading() {
+        let path = temp_file_with("not a number\n");
+
+        assert!(read_hwmon_millidegrees(&path).is_err());
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn read_hwmon_rejects_a_missing_file() {
+        let path = std::env::temp_dir().join("cs-governor-hwmon-test-does-not-exist");
+        let _ = std::fs::remove_file(&path);
+
+        assert!(read_hwmon_millidegrees(&path).is_err());
+    }
 
     #[test]
     fn voltage_for_freq_interpolates_between_safe_points() {
