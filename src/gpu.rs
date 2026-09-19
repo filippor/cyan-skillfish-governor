@@ -2,9 +2,7 @@ use crate::app_error::{AppError, Result};
 use crate::config::{GpuSetMethod, GpuTempRead, GpuUsageMethod};
 use cyan_skillfish_governor_smu::Bc250Smu;
 use libdrm_amdgpu_sys::{AMDGPU::DeviceHandle, PCI::BUS_INFO};
-use log::debug;
-use log::info;
-use log::warn;
+use log::{debug,info,warn};
 
 use std::{collections::BTreeMap, fs::File, io::Error as IoError, path::PathBuf, time::Duration};
 
@@ -24,6 +22,7 @@ use sysfs_temp_strategy::SysfsTempStrategy;
 trait FreqStrategy: Send {
     fn change_freq(&mut self, freq: u32, vol: u32) -> Result<()>;
     fn get_freq(&self) -> Result<u32>;
+    
     fn shutdown(&mut self) -> Result<()> {
         Ok(())
     }
@@ -233,9 +232,12 @@ fn init_device_handle(render_path: PathBuf) -> Result<DeviceHandle> {
         .map_err(|e| IoError::other(format!("DeviceHandle::init_with_fd failed: {e}")))?;
     Ok(dev_handle)
 }
+
+
 struct SmuFreqStrategy {
     smu: Bc250Smu,
 }
+
 
 impl SmuFreqStrategy {
     fn new() -> Result<Self> {
@@ -249,6 +251,7 @@ impl SmuFreqStrategy {
     }
 }
 
+
 impl FreqStrategy for SmuFreqStrategy {
     fn change_freq(&mut self, freq: u32, vol: u32) -> Result<()> {
         self.smu.force_gfx_vid(vol)?;
@@ -260,6 +263,8 @@ impl FreqStrategy for SmuFreqStrategy {
     fn get_freq(&self) -> Result<u32> {
         Ok(self.smu.get_gfx_frequency()?)
     }
+
+   
 
     fn shutdown(&mut self) -> Result<()> {
         let _ = self.smu.unforce_gfx_freq();
