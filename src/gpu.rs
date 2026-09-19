@@ -2,8 +2,7 @@ use crate::app_error::{AppError, Result};
 use crate::config::{GpuSetMethod, GpuTempRead, GpuUsageMethod};
 use cyan_skillfish_governor_smu::Bc250Smu;
 use libdrm_amdgpu_sys::{AMDGPU::DeviceHandle, PCI::BUS_INFO};
-use log::debug;
-use log::info;
+use log::{debug,info,warn};
 
 use std::{collections::BTreeMap, fs::File, io::Error as IoError, path::PathBuf, time::Duration};
 
