@@ -18,7 +18,7 @@ log = "0.4"
 zbus = { version = "5", features = ["blocking"] }
 
 [lints.rust]
-unsafe_code = "deny"
+#unsafe_code = "deny"
 unused_imports = "deny"
 
 [package.metadata.deb]

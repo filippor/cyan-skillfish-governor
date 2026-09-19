@@ -6,12 +6,12 @@ adjust = 100_000
 [gpu-usage]
 fix-metrics = false
  fix-freq = false
-method = "busy-flag" # "busy-flag" , "process" or "kernel"
-temp-read = "drm" # "drm" or "sysfs"
+method = "process" # "busy-flag" , "process" or "kernel"
+temp-read = "sysfs" # "drm" or "sysfs"
 flush-every = 10
 
 [gpu]
-set-method = "smu"  # "smu" or "kernel"
+set-method = "kernel"  # "smu" or "kernel"
 
 # Profiles: 1 = ~450 MHz idle, 2 = ~850 MHz intermediate,
 # 3 = ~1750 MHz active/baseline.

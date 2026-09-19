@@ -77,7 +77,7 @@ fn main() -> Result<()> {
                 )
             }),
         ).ok()
-    }).unwrap_or(None);
+    });
 
     let gpu_usage_fix = if config.gpu_usage.fix_metrics {
         info!("GPU usage metrics fix enabled");
