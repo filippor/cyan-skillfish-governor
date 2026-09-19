@@ -530,7 +530,10 @@ fn parse_gpu_usage_config(config: &Table) -> GpuUsageConfig {
         Some("drm") => GpuTempRead::Drm,
         Some("sysfs") => GpuTempRead::Sysfs,
         Some(other) => {
-            warn!("gpu-usage.temp-read '{}' is invalid, using default drm", other);
+            warn!(
+                "gpu-usage.temp-read '{}' is invalid, using default drm",
+                other
+            );
             GpuTempRead::Drm
         }
         _ => GpuTempRead::Drm,
