@@ -36,18 +36,10 @@ trait UsageStrategy: Send {
     fn poll_and_get_load(&mut self) -> Result<(f32, u32)>;
 }
 
-/// Where `read_temperature` gets its value from, chosen by
-/// `gpu-usage.temp-read`.
-///
-/// An `Err` from a strategy means "replace me": the caller degrades to the DRM
-/// ioctl rather than propagating it, because the temperature only drives
-/// thermal throttling and losing it would stop frequency management altogether.
 trait TempStrategy: Send {
     fn read_temperature(&mut self) -> Result<u32>;
 }
 
-/// Reads the GPU temperature through `AMDGPU_INFO_SENSOR_GPU_TEMP`, keeping a
-/// DRM device handle open for the life of the process.
 struct DrmTempStrategy {
     dev_handle: DeviceHandle,
 }
@@ -58,7 +50,7 @@ impl TempStrategy for DrmTempStrategy {
             .dev_handle
             .sensor_info(libdrm_amdgpu_sys::AMDGPU::SENSOR_INFO::SENSOR_TYPE::GPU_TEMP)
             .map_err(IoError::from_raw_os_error)?;
-        Ok(millidegrees_to_celsius(i64::from(temp)))
+        Ok(temp / 1000)
     }
 }
 
@@ -144,23 +136,7 @@ impl GPU {
     }
 
     pub fn read_temperature(&mut self) -> Result<u32> {
-        // A strategy that gives up mid-run degrades rather than killing the
-        // control loop: the temperature only drives thermal throttling, and
-        // losing it would stop the governor entirely.
-        match self.temp_strategy.read_temperature() {
-            Ok(temp) => Ok(temp),
-            Err(e) => {
-                warn!(
-                    "gpu-usage.temp-read = \"sysfs\": {e}; falling back to the DRM ioctl for the rest of this run"
-                );
-                let mut fallback = DrmTempStrategy {
-                    dev_handle: init_device_handle(self.location.get_drm_render_path()?)?,
-                };
-                let temp = fallback.read_temperature()?;
-                self.temp_strategy = Box::new(fallback);
-                Ok(temp)
-            }
-        }
+        self.temp_strategy.read_temperature()
     }
 
     pub fn change_freq(&mut self, freq: u32) -> Result<()> {
@@ -229,19 +205,13 @@ fn validate_device_identity(location: &BUS_INFO) -> Result<()> {
     ))
 }
 
-/// Plausible range for an edge temperature, in millidegrees C. Anything
-fn millidegrees_to_celsius(millidegrees: i64) -> u32 {
-    (millidegrees / 1000).max(0) as u32
-}
-
-/// Pick the temperature strategy, degrading to the DRM ioctl if sysfs is not
-/// usable.
 fn init_temp_strategy(
     gpu_temp_read: GpuTempRead,
     location: &BUS_INFO,
 ) -> Result<Box<dyn TempStrategy + Send>> {
     if let GpuTempRead::Sysfs = gpu_temp_read {
-        match SysfsTempStrategy::probe(&location.get_sysfs_path()) {
+        match SysfsTempStrategy::probe(&location.get_sysfs_path(), location.get_drm_render_path()?)
+        {
             Ok(strategy) => {
                 info!("reading GPU temperature from {}", strategy.path().display());
                 return Ok(Box::new(strategy));

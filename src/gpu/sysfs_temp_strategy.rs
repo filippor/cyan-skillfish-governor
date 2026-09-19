@@ -1,4 +1,4 @@
-use super::{TempStrategy, millidegrees_to_celsius};
+use super::{DrmTempStrategy, TempStrategy, init_device_handle};
 use crate::app_error::{AppError, Result};
 use log::warn;
 use std::{
@@ -15,9 +15,7 @@ const TEMP_MAX_MILLIDEGREES: i64 = 150_000;
 ///
 /// One failure means nothing: the value only drives thermal throttling, and a
 /// reading a few hundred milliseconds stale serves that just as well. Giving up
-/// is the expensive outcome, not the error -- the caller then falls back to the
-/// DRM ioctl, opening a render node for the rest of the run, which is the thing
-/// `temp-read = "sysfs"` exists to avoid.
+/// is the expensive outcome, so the strategy then falls back to the DRM ioctl.
 const MAX_CONSECUTIVE_FAILURES: u32 = 5;
 
 /// Reads the GPU temperature from the amdgpu hwmon `temp1_input` attribute.
@@ -27,6 +25,8 @@ const MAX_CONSECUTIVE_FAILURES: u32 = 5;
 /// can be ridden out instead of ending the strategy.
 pub(super) struct SysfsTempStrategy {
     path: PathBuf,
+    drm_render_path: PathBuf,
+    drm_fallback: Option<DrmTempStrategy>,
     last_good: i64,
     failures: u32,
 }
@@ -44,11 +44,13 @@ impl SysfsTempStrategy {
     /// The probe read is kept rather than discarded: it seeds `last_good`, so a
     /// failure on the very first control cycle already has something sensible
     /// to fall back on.
-    pub(super) fn probe(sysfs_path: &Path) -> Result<Self> {
+    pub(super) fn probe(sysfs_path: &Path, drm_render_path: PathBuf) -> Result<Self> {
         let path = find_hwmon_temp_input(sysfs_path)?;
         let last_good = read_hwmon_millidegrees(&path)?;
         Ok(Self {
             path,
+            drm_render_path,
+            drm_fallback: None,
             last_good,
             failures: 0,
         })
@@ -65,6 +67,8 @@ impl SysfsTempStrategy {
         let last_good = read_hwmon_millidegrees(&path).expect("test file must be readable");
         Self {
             path,
+            drm_render_path: PathBuf::new(),
+            drm_fallback: None,
             last_good,
             failures: 0,
         }
@@ -74,14 +78,19 @@ impl SysfsTempStrategy {
 impl TempStrategy for SysfsTempStrategy {
     /// A failed read reuses the last good value and is reported only as a
     /// warning. An error is returned -- meaning "replace me" -- only once
-    /// `MAX_CONSECUTIVE_FAILURES` reads in a row have failed. A successful read
-    /// resets the count, so isolated errors never accumulate towards that.
+    /// `MAX_CONSECUTIVE_FAILURES` reads in a row have failed; then the strategy
+    /// switches to the DRM ioctl. A successful read resets the count, so
+    /// isolated errors never accumulate towards that.
     fn read_temperature(&mut self) -> Result<u32> {
+        if let Some(fallback) = &mut self.drm_fallback {
+            return fallback.read_temperature();
+        }
+
         match read_hwmon_millidegrees(&self.path) {
             Ok(millidegrees) => {
                 self.last_good = millidegrees;
                 self.failures = 0;
-                Ok(millidegrees_to_celsius(millidegrees))
+                Ok((millidegrees / 1000) as u32)
             }
             Err(e) => {
                 self.failures += 1;
@@ -90,12 +99,17 @@ impl TempStrategy for SysfsTempStrategy {
                         "gpu-usage.temp-read = \"sysfs\": {e}; reusing the last good reading ({} failure(s) in a row, giving up at {MAX_CONSECUTIVE_FAILURES})",
                         self.failures
                     );
-                    return Ok(millidegrees_to_celsius(self.last_good));
+                    return Ok((self.last_good / 1000) as u32);
                 }
-                Err(IoError::other(format!(
-                    "{MAX_CONSECUTIVE_FAILURES} reads in a row failed, last error: {e}"
-                ))
-                .into())
+                warn!(
+                    "gpu-usage.temp-read = \"sysfs\": {e}; falling back to the DRM ioctl for the rest of this run"
+                );
+                let mut fallback = DrmTempStrategy {
+                    dev_handle: init_device_handle(self.drm_render_path.clone())?,
+                };
+                let temperature = fallback.read_temperature()?;
+                self.drm_fallback = Some(fallback);
+                Ok(temperature)
             }
         }
     }
