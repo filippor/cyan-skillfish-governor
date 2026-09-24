@@ -26,9 +26,9 @@ fn millidegrees_to_celsius(millidegrees: i64) -> u32 {
 
 /// Reads the GPU temperature from the amdgpu hwmon `temp1_input` attribute.
 ///
-/// Holds only a path, and opens the file per read, so no DRM client is kept
-/// open for temperature. Carries the last good reading so a transient failure
-/// can be ridden out instead of ending the strategy.
+/// Opens the file per read, so no DRM client is held while sysfs is working.
+/// Carries the last good reading so a transient failure can be ridden out, and
+/// the render path so it can hand over to the DRM ioctl if sysfs stops working.
 pub(super) struct SysfsTempStrategy {
     path: PathBuf,
     drm_render_path: PathBuf,
@@ -83,10 +83,10 @@ impl SysfsTempStrategy {
 
 impl TempStrategy for SysfsTempStrategy {
     /// A failed read reuses the last good value and is reported only as a
-    /// warning. An error is returned -- meaning "replace me" -- only once
-    /// `MAX_CONSECUTIVE_FAILURES` reads in a row have failed; then the strategy
-    /// switches to the DRM ioctl. A successful read resets the count, so
-    /// isolated errors never accumulate towards that.
+    /// warning. Once `MAX_CONSECUTIVE_FAILURES` reads in a row have failed the
+    /// strategy hands over to the DRM ioctl for the rest of the run. A
+    /// successful read resets the count, so isolated errors never accumulate
+    /// towards that.
     fn read_temperature(&mut self) -> Result<u32> {
         if let Some(fallback) = &mut self.drm_fallback {
             return fallback.read_temperature();
@@ -231,7 +231,10 @@ mod tests {
     }
 
     /// A transient failure must not end the strategy: it reuses the last good
-    /// reading and only gives up after MAX_CONSECUTIVE_FAILURES in a row.
+    /// reading rather than propagating the error.
+    ///
+    /// Only the first `MAX_CONSECUTIVE_FAILURES - 1` failures are exercised: the
+    /// hand-over opens a real DRM render node, which a unit test cannot do.
     #[test]
     fn a_transient_failure_reuses_the_last_good_reading() {
         let path = temp_file_with("45000\n");
@@ -247,11 +250,6 @@ mod tests {
                 "a failed read should reuse the last good value"
             );
         }
-        assert!(
-            strategy.read_temperature().is_err(),
-            "the {MAX_CONSECUTIVE_FAILURES}th consecutive failure should give up"
-        );
-
         let _ = std::fs::remove_file(&path);
     }
 
