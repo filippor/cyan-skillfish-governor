@@ -18,6 +18,12 @@ const TEMP_MAX_MILLIDEGREES: i64 = 150_000;
 /// is the expensive outcome, so the strategy then falls back to the DRM ioctl.
 const MAX_CONSECUTIVE_FAILURES: u32 = 5;
 
+/// `read_hwmon_millidegrees` accepts readings down to `TEMP_MIN_MILLIDEGREES`,
+/// and `as u32` on a negative i64 wraps to about u32::MAX; clamp instead.
+fn millidegrees_to_celsius(millidegrees: i64) -> u32 {
+    (millidegrees / 1000).max(0) as u32
+}
+
 /// Reads the GPU temperature from the amdgpu hwmon `temp1_input` attribute.
 ///
 /// Holds only a path, and opens the file per read, so no DRM client is kept
@@ -90,7 +96,7 @@ impl TempStrategy for SysfsTempStrategy {
             Ok(millidegrees) => {
                 self.last_good = millidegrees;
                 self.failures = 0;
-                Ok((millidegrees / 1000) as u32)
+                Ok(millidegrees_to_celsius(millidegrees))
             }
             Err(e) => {
                 self.failures += 1;
@@ -99,7 +105,7 @@ impl TempStrategy for SysfsTempStrategy {
                         "gpu-usage.temp-read = \"sysfs\": {e}; reusing the last good reading ({} failure(s) in a row, giving up at {MAX_CONSECUTIVE_FAILURES})",
                         self.failures
                     );
-                    return Ok((self.last_good / 1000) as u32);
+                    return Ok(millidegrees_to_celsius(self.last_good));
                 }
                 warn!(
                     "gpu-usage.temp-read = \"sysfs\": {e}; falling back to the DRM ioctl for the rest of this run"
@@ -164,7 +170,10 @@ fn find_hwmon_temp_input(sysfs_path: &Path) -> Result<PathBuf> {
 
 #[cfg(test)]
 mod tests {
-    use super::{MAX_CONSECUTIVE_FAILURES, TEMP_MAX_MILLIDEGREES, read_hwmon_millidegrees};
+    use super::{
+        MAX_CONSECUTIVE_FAILURES, TEMP_MAX_MILLIDEGREES, TEMP_MIN_MILLIDEGREES,
+        millidegrees_to_celsius, read_hwmon_millidegrees,
+    };
     use crate::gpu::TempStrategy;
     use std::path::PathBuf;
 
@@ -244,6 +253,20 @@ mod tests {
         );
 
         let _ = std::fs::remove_file(&path);
+    }
+
+    /// The validator accepts readings down to TEMP_MIN_MILLIDEGREES; the
+    /// conversion must clamp them rather than wrap to u32::MAX.
+    #[test]
+    fn a_sub_zero_reading_clamps_instead_of_wrapping() {
+        assert_eq!(millidegrees_to_celsius(TEMP_MIN_MILLIDEGREES), 0);
+        assert_eq!(millidegrees_to_celsius(-1000), 0);
+        assert_eq!(millidegrees_to_celsius(-1), 0);
+        assert_eq!(millidegrees_to_celsius(45_000), 45);
+        assert_eq!(
+            millidegrees_to_celsius(TEMP_MAX_MILLIDEGREES),
+            (TEMP_MAX_MILLIDEGREES / 1000) as u32
+        );
     }
 
     /// A good read in between must reset the count, so isolated errors never
