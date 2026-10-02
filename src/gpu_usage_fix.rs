@@ -12,6 +12,7 @@ const USAGE_OFFSET: usize = 0x1C; // Byte 28
 
 pub struct GpuUsageFix {
     real_file: File,
+    real_metrics_path: PathBuf,
     overlay: BindOverlay,
 }
 
@@ -25,16 +26,47 @@ impl GpuUsageFix {
             .ok_or_else(|| io::Error::other("metrics path contains invalid UTF-8"))?;
 
         trace!("Opening real metrics: {real_metrics_path}");
-        let mut real_file = OpenOptions::new().read(true).open(&real_metrics_path)?;
+        let mut real_file = OpenOptions::new()
+            .read(true)
+            .open(&real_metrics_path_buf)
+            .map_err(|error| {
+                io::Error::new(
+                    error.kind(),
+                    format!(
+                        "failed to open GPU metrics sysfs file '{}': {error}",
+                        real_metrics_path_buf.display()
+                    ),
+                )
+            })?;
 
         // Reading real metrics to buffer
         let mut raw = [0u8; 128];
-        real_file.seek(SeekFrom::Start(0))?;
-        real_file.read(&mut raw)?;
+        real_file.seek(SeekFrom::Start(0)).map_err(|error| {
+            io::Error::new(
+                error.kind(),
+                format!(
+                    "failed to seek GPU metrics sysfs file '{}': {error}",
+                    real_metrics_path_buf.display()
+                ),
+            )
+        })?;
+        real_file.read(&mut raw).map_err(|error| {
+            io::Error::new(
+                error.kind(),
+                format!(
+                    "failed to read GPU metrics sysfs file '{}': {error}",
+                    real_metrics_path_buf.display()
+                ),
+            )
+        })?;
 
         let overlay = BindOverlay::create(PATCHED_METRICS_PATH, real_metrics_path, &raw)?;
 
-        Ok(Self { real_file, overlay })
+        Ok(Self {
+            real_file,
+            real_metrics_path: real_metrics_path_buf,
+            overlay,
+        })
     }
 
     pub fn set_usage_percent(&mut self, usage: f32) -> io::Result<()> {
@@ -43,8 +75,24 @@ impl GpuUsageFix {
         let clamped = (usage * 100.0).clamp(0.0, 10000.0).round() as u16;
         let mut raw = [0u8; 128];
 
-        self.real_file.seek(SeekFrom::Start(0))?;
-        let n = self.real_file.read(&mut raw)?;
+        self.real_file.seek(SeekFrom::Start(0)).map_err(|error| {
+            io::Error::new(
+                error.kind(),
+                format!(
+                    "failed to seek GPU metrics sysfs file '{}': {error}",
+                    self.real_metrics_path.display()
+                ),
+            )
+        })?;
+        let n = self.real_file.read(&mut raw).map_err(|error| {
+            io::Error::new(
+                error.kind(),
+                format!(
+                    "failed to read GPU metrics sysfs file '{}': {error}",
+                    self.real_metrics_path.display()
+                ),
+            )
+        })?;
 
         if n < USAGE_OFFSET + 2 {
             return Ok(());

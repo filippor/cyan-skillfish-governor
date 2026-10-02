@@ -150,7 +150,20 @@ fn install_signal_handler(shutdown_tx: Sender<()>) -> Result<()> {
 
 fn load_config(config_path: Option<&str>) -> Result<Config> {
     let config_text = config_path
-        .map(std::fs::read_to_string)
+        .map(|path| {
+            std::fs::read_to_string(path).map_err(|error| {
+                std::io::Error::new(
+                    error.kind(),
+                    format!("failed to read configuration file '{path}': {error}"),
+                )
+            })
+        })
         .unwrap_or_else(|| Ok(String::new()));
-    Config::new(config_text)
+    match Config::new(config_text) {
+        Err(AppError::Toml(parse_error)) => {
+            error!("Invalid TOML configuration: {parse_error}");
+            Err(AppError::Toml(parse_error))
+        }
+        result => result,
+    }
 }

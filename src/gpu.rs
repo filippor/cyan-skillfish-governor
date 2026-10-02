@@ -49,7 +49,13 @@ impl TempStrategy for DrmTempStrategy {
         let temp = self
             .dev_handle
             .sensor_info(libdrm_amdgpu_sys::AMDGPU::SENSOR_INFO::SENSOR_TYPE::GPU_TEMP)
-            .map_err(IoError::from_raw_os_error)?;
+            .map_err(|errno| {
+                let error = IoError::from_raw_os_error(errno);
+                IoError::new(
+                    error.kind(),
+                    format!("failed to read GPU temperature through DRM sensor ioctl: {error}"),
+                )
+            })?;
         Ok(temp / 1000)
     }
 }
@@ -193,8 +199,26 @@ const EXPECTED_VENDOR_ID: &str = "0x1002";
 const EXPECTED_DEVICE_ID: &str = "0x13fe";
 fn validate_device_identity(location: &BUS_INFO) -> Result<()> {
     let sysfs_path = location.get_sysfs_path();
-    let vendor = std::fs::read_to_string(sysfs_path.join("vendor"))?;
-    let device = std::fs::read_to_string(sysfs_path.join("device"))?;
+    let vendor_path = sysfs_path.join("vendor");
+    let vendor = std::fs::read_to_string(&vendor_path).map_err(|error| {
+        IoError::new(
+            error.kind(),
+            format!(
+                "failed to read GPU vendor ID from sysfs file '{}': {error}",
+                vendor_path.display()
+            ),
+        )
+    })?;
+    let device_path = sysfs_path.join("device");
+    let device = std::fs::read_to_string(&device_path).map_err(|error| {
+        IoError::new(
+            error.kind(),
+            format!(
+                "failed to read GPU device ID from sysfs file '{}': {error}",
+                device_path.display()
+            ),
+        )
+    })?;
 
     if vendor.trim() == EXPECTED_VENDOR_ID && device.trim() == EXPECTED_DEVICE_ID {
         return Ok(());
@@ -228,9 +252,21 @@ fn init_temp_strategy(
 }
 
 fn init_device_handle(render_path: PathBuf) -> Result<DeviceHandle> {
-    let card = File::open(render_path)?;
-    let (dev_handle, _, _) = DeviceHandle::init_with_fd(&card)
-        .map_err(|e| IoError::other(format!("DeviceHandle::init_with_fd failed: {e}")))?;
+    let card = File::open(&render_path).map_err(|error| {
+        IoError::new(
+            error.kind(),
+            format!(
+                "failed to open DRM render node '{}' for GPU temperature read: {error}",
+                render_path.display()
+            ),
+        )
+    })?;
+    let (dev_handle, _, _) = DeviceHandle::init_with_fd(&card).map_err(|error| {
+        IoError::other(format!(
+            "failed to initialize DRM render node '{}' for GPU temperature read: {error}",
+            render_path.display()
+        ))
+    })?;
     Ok(dev_handle)
 }
 struct SmuFreqStrategy {
@@ -293,7 +329,15 @@ impl UsageStrategy for BusyFlagUsageStrategy {
             let res = self
                 .dev_handle
                 .read_mm_registers(GRBM_STATUS_REG)
-                .map_err(IoError::from_raw_os_error)?;
+                .map_err(|errno| {
+                    let error = IoError::from_raw_os_error(errno);
+                    IoError::new(
+                        error.kind(),
+                        format!(
+                            "failed to read GPU busy status from DRM register 0x{GRBM_STATUS_REG:x}: {error}"
+                        ),
+                    )
+                })?;
             let gpu_busy = (res & (1 << GPU_ACTIVE_BIT)) > 0;
 
             self.samples <<= 1;

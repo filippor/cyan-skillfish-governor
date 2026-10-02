@@ -20,7 +20,16 @@ impl KernelFreqStrategy {
         let pp_od_clk_voltage_path = gpu_sysfs_path.join("pp_od_clk_voltage");
         let pp_file = std::fs::OpenOptions::new()
             .write(true)
-            .open(&pp_od_clk_voltage_path)?;
+            .open(&pp_od_clk_voltage_path)
+            .map_err(|error| {
+                IoError::new(
+                    error.kind(),
+                    format!(
+                        "failed to open pp_od_clk_voltage for writing at '{}': {error}",
+                        pp_od_clk_voltage_path.display()
+                    ),
+                )
+            })?;
         let dpm_sclk = gpu_sysfs_path.join("pp_dpm_sclk");
         Ok(Self {
             pp_file,
@@ -49,33 +58,60 @@ impl KernelFreqStrategy {
 impl FreqStrategy for KernelFreqStrategy {
     fn change_freq(&mut self, freq: u32, vol: u32) -> Result<()> {
         let cmd = format!("vc 0 {freq} {vol}");
-        self.pp_file.write_all(cmd.as_bytes()).map_err(|e| {
-            IoError::other(format!("writing '{cmd}' to pp_od_clk_voltage failed: {e}"))
+        self.pp_file.write_all(cmd.as_bytes()).map_err(|error| {
+            IoError::new(
+                error.kind(),
+                format!(
+                    "failed to write '{cmd}' to '{}': {error}",
+                    self.pp_od_clk_voltage_path.display()
+                ),
+            )
         })?;
-        self.pp_file.write_all("c".as_bytes()).map_err(|e| {
-            IoError::other(format!(
-                "writing 'c' (commit) to pp_od_clk_voltage failed: {e}"
-            ))
+        self.pp_file.write_all("c".as_bytes()).map_err(|error| {
+            IoError::new(
+                error.kind(),
+                format!(
+                    "failed to write commit command to '{}': {error}",
+                    self.pp_od_clk_voltage_path.display()
+                ),
+            )
         })?;
         Ok(())
     }
 
     fn get_freq(&self) -> Result<u32> {
-        let content = std::fs::read_to_string(&self.dpm_sclk)?;
+        let content = std::fs::read_to_string(&self.dpm_sclk).map_err(|error| {
+            IoError::new(
+                error.kind(),
+                format!(
+                    "failed to read current GPU frequency from '{}': {error}",
+                    self.dpm_sclk.display()
+                ),
+            )
+        })?;
 
         let line = content
             .lines()
             .find(|line| line.contains('*'))
-            .ok_or(IoError::other("failed to find active pp_dpm_sclk level"))?;
+            .ok_or(IoError::other(format!(
+                "failed to find active frequency in '{}'",
+                self.dpm_sclk.display()
+            )))?;
 
         let freq_mhz = line
             .split_whitespace()
             .find_map(|token| token.strip_suffix("Mhz"))
-            .ok_or(IoError::other(
-                "failed to parse pp_dpm_sclk frequency token",
-            ))?
+            .ok_or(IoError::other(format!(
+                "failed to find a frequency token in '{}'",
+                self.dpm_sclk.display()
+            )))?
             .parse::<u32>()
-            .map_err(IoError::other)?;
+            .map_err(|error| {
+                IoError::other(format!(
+                    "failed to parse current GPU frequency from '{}': {error}",
+                    self.dpm_sclk.display()
+                ))
+            })?;
 
         Ok(freq_mhz)
     }
@@ -84,7 +120,10 @@ impl FreqStrategy for KernelFreqStrategy {
         let content = match std::fs::read_to_string(&self.pp_od_clk_voltage_path) {
             Ok(c) => c,
             Err(e) => {
-                warn!("could not read pp_od_clk_voltage for SCLK limits ({e}), skipping clamp");
+                warn!(
+                    "could not read '{}' for SCLK limits ({e}), skipping clamp",
+                    self.pp_od_clk_voltage_path.display()
+                );
                 return Ok(safe_points);
             }
         };

@@ -20,7 +20,12 @@ impl GpuFrequencyFix {
             .to_str()
             .ok_or_else(|| io::Error::other("hwmon frequency path contains invalid UTF-8"))?;
 
-        let initial_frequency = fs::read_to_string(freq_path)?;
+        let initial_frequency = fs::read_to_string(&freq_path).map_err(|error| {
+            io::Error::new(
+                error.kind(),
+                format!("failed to read GPU frequency sysfs file '{freq_path}': {error}"),
+            )
+        })?;
         let overlay =
             BindOverlay::create(PATCHED_FREQ_PATH, freq_path, initial_frequency.as_bytes())?;
 
@@ -43,9 +48,37 @@ impl GpuFrequencyFix {
 }
 
 fn find_hwmon_freq_path(device_path: &PathBuf) -> io::Result<PathBuf> {
-    for entry in fs::read_dir(device_path.join("hwmon"))? {
-        let hwmon_path = entry?.path();
-        let name = fs::read_to_string(hwmon_path.join("name"))?;
+    let hwmon_dir = device_path.join("hwmon");
+    let entries = fs::read_dir(&hwmon_dir).map_err(|error| {
+        io::Error::new(
+            error.kind(),
+            format!(
+                "failed to read GPU hwmon directory '{}': {error}",
+                hwmon_dir.display()
+            ),
+        )
+    })?;
+    for entry in entries {
+        let entry = entry.map_err(|error| {
+            io::Error::new(
+                error.kind(),
+                format!(
+                    "failed to inspect GPU hwmon directory '{}': {error}",
+                    hwmon_dir.display()
+                ),
+            )
+        })?;
+        let hwmon_path = entry.path();
+        let name_path = hwmon_path.join("name");
+        let name = fs::read_to_string(&name_path).map_err(|error| {
+            io::Error::new(
+                error.kind(),
+                format!(
+                    "failed to read GPU hwmon name '{}': {error}",
+                    name_path.display()
+                ),
+            )
+        })?;
         let freq_path = hwmon_path.join("freq1_input");
         if name.trim() == "amdgpu" && freq_path.exists() {
             return Ok(freq_path);
