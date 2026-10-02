@@ -26,7 +26,12 @@ impl KernelUsageStrategy {
 
 impl UsageStrategy for KernelUsageStrategy {
     fn poll_and_get_load(&mut self) -> Result<(f32, u32)> {
-        let raw = std::fs::read_to_string(&self.gpu_busy_percent_path)?;
+        let raw = std::fs::read_to_string(&self.gpu_busy_percent_path).map_err(|error| {
+            IoError::other(format!(
+                "failed to read GPU usage from sysfs at '{}': {error}",
+                self.gpu_busy_percent_path.display()
+            ))
+        })?;
         let percent: f32 = raw
             .trim()
             .parse::<u32>()

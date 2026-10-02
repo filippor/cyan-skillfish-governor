@@ -124,8 +124,15 @@ impl TempStrategy for SysfsTempStrategy {
 /// Read one temperature from an amdgpu hwmon `temp1_input`, rejecting anything
 /// that is missing, unreadable, not an integer, or out of plausible range.
 fn read_hwmon_millidegrees(path: &Path) -> Result<i64> {
-    let raw = std::fs::read_to_string(path)
-        .map_err(|e| IoError::other(format!("{}: {e}", path.display())))?;
+    let raw = std::fs::read_to_string(path).map_err(|error| {
+        IoError::new(
+            error.kind(),
+            format!(
+                "failed to read GPU temperature from sysfs file '{}': {error}",
+                path.display()
+            ),
+        )
+    })?;
     let millidegrees: i64 = raw.trim().parse().map_err(|_| {
         IoError::other(format!(
             "{} did not contain an integer: {:?}",
