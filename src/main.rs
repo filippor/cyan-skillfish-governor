@@ -14,10 +14,10 @@ use governor::Governor;
 use gpu::GPU;
 use gpu_frequency_fix::GpuFrequencyFix;
 use gpu_usage_fix::GpuUsageFix;
-use log::info;
+use log::{error, info};
 use signal_hook::consts::signal::*;
 use signal_hook::iterator::Signals;
-use std::sync::mpsc::{self, Sender};
+use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
@@ -82,11 +82,36 @@ fn main() -> Result<()> {
         info!("D-Bus service listening disabled in configuration");
     }
 
+    let result = run_control_loop(&governor, &shutdown_rx);
+
+    // Also on the error path: with set-method = "smu", shutdown() is what sends
+    // UnforceGfxFreq/UnforceGfxVid, and a governor that exits on an error would
+    // otherwise leave the forced clock and voltage held until the service
+    // restart re-runs SmuFreqStrategy::new. The loop's error stays the exit
+    // status; a shutdown error on top of it is logged rather than substituted.
+    info!("Shutting down gracefully...");
+    let shutdown = match governor.lock() {
+        Ok(mut governor) => governor.shutdown(),
+        Err(_) => Err(AppError::from("governor lock poisoned")),
+    };
+    match (result, shutdown) {
+        (Ok(()), shutdown) => shutdown,
+        (Err(loop_err), Err(shutdown_err)) => {
+            error!("shutdown after a failed control loop also failed: {shutdown_err}");
+            Err(loop_err)
+        }
+        (result, Ok(())) => result,
+    }
+}
+
+/// The control loop, until a signal or the first error. Separate from main so
+/// the shutdown runs whichever way it ends.
+fn run_control_loop(governor: &Arc<Mutex<Governor>>, shutdown_rx: &Receiver<()>) -> Result<()> {
     loop {
         let loop_start = Instant::now();
 
         if shutdown_rx.try_recv().is_ok() {
-            break;
+            return Ok(());
         }
 
         governor
@@ -103,13 +128,6 @@ fn main() -> Result<()> {
             std::thread::sleep(target_cycle_interval - elapsed);
         }
     }
-
-    info!("Shutting down gracefully...");
-    governor
-        .lock()
-        .expect("governor lock poisoned")
-        .shutdown()?;
-    Ok(())
 }
 
 fn init_logger(verbose: Verbosity<InfoLevel>) {
