@@ -15,8 +15,7 @@ use governor::Governor;
 use gpu::GPU;
 use gpu_frequency_fix::GpuFrequencyFix;
 use gpu_usage_fix::GpuUsageFix;
-use log::info;
-use log::warn;
+use log::{error, info, warn};
 use memory_fabric_profile::MemoryFabricProfile;
 use signal_hook::consts::signal::*;
 use signal_hook::iterator::Signals;
@@ -106,7 +105,7 @@ fn main() -> Result<()> {
         info!("D-Bus service listening disabled in configuration");
     }
 
-    let result = run_control_loop(&governor, &shutdown_rx);
+    let result = run_control_loop(&governor, &shutdown_rx, &mut memory_fabric_profile);
 
     // Also on the error path: with set-method = "smu", shutdown() is what sends
     // UnforceGfxFreq/UnforceGfxVid, and a governor that exits on an error would
@@ -114,6 +113,11 @@ fn main() -> Result<()> {
     // restart re-runs SmuFreqStrategy::new. The loop's error stays the exit
     // status; a shutdown error on top of it is logged rather than substituted.
     info!("Shutting down gracefully...");
+    if let Some(memory_fabric_profile) = memory_fabric_profile.as_mut() {
+        if let Err(reset_err) = memory_fabric_profile.reset() {
+            error!("failed to reset memory fabric profile: {reset_err}");
+        }
+    }
     let shutdown = match governor.lock() {
         Ok(mut governor) => governor.shutdown(),
         Err(_) => Err(AppError::from("governor lock poisoned")),
@@ -130,7 +134,11 @@ fn main() -> Result<()> {
 
 /// The control loop, until a signal or the first error. Separate from main so
 /// the shutdown runs whichever way it ends.
-fn run_control_loop(governor: &Arc<Mutex<Governor>>, shutdown_rx: &Receiver<()>) -> Result<()> {
+fn run_control_loop(
+    governor: &Arc<Mutex<Governor>>,
+    shutdown_rx: &Receiver<()>,
+    memory_fabric_profile: &mut Option<MemoryFabricProfile>,
+) -> Result<()> {
     loop {
         let loop_start = Instant::now();
 
@@ -154,17 +162,6 @@ fn run_control_loop(governor: &Arc<Mutex<Governor>>, shutdown_rx: &Receiver<()>)
             std::thread::sleep(target_cycle_interval - elapsed);
         }
     }
-
-    info!("Shutting down gracefully...");
-    let mut governor = governor.lock().expect("governor lock poisoned");
-    if let Some(memory_fabric_profile) = memory_fabric_profile
-        .as_mut()
-        
-    {
-        memory_fabric_profile.reset()?;
-    }
-    governor.shutdown()?;
-    Ok(())
 }
 
 fn init_logger(verbose: Verbosity<InfoLevel>) {
