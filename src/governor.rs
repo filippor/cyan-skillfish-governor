@@ -38,7 +38,7 @@ impl Governor {
         let max_freq = *params.allowed_frequency_range.end();
         let requested_range = params.initial_frequency_range.clone();
         let startup_initial_range = params.initial_frequency_range.clone();
-        let target_cycle_interval = params.adjustment_interval.clone();
+        let target_cycle_interval = params.adjustment_interval;
         Ok(Self {
             params,
             gpu,
@@ -57,7 +57,7 @@ impl Governor {
         })
     }
 
-    pub fn run_iteration(&mut self) -> Result<()> {
+    pub fn run_iteration(&mut self) -> Result<f32> {
         let (average_load, burst_length) = if !self.performance_mode || self.gpu_usage_fix.is_some()
         {
             self.gpu.poll_and_get_load()?
@@ -83,7 +83,7 @@ impl Governor {
 
         let temp = self.update_max_freq_for_temperature()?;
         if self.test_mode {
-            return Ok(());
+            return Ok(average_load);
         }
         let (next_target, next_status, should_apply_change) = compute_frequency_decision(
             self.curr_freq,
@@ -124,7 +124,7 @@ impl Governor {
             self.params.adjustment_interval
         };
 
-        Ok(())
+        Ok(average_load)
     }
 
     pub fn apply_enable_performance_mode_command(&mut self, value: bool) {
@@ -299,13 +299,11 @@ impl Governor {
         throttling: u32,
         recovery: u32,
     ) -> Result<()> {
-        // Validate all inputs
         if throttling != 0 && !(1..=95).contains(&throttling) {
             return Err(
                 "temperature throttling must be between 1 and 95 Celsius, or 0 to ignore".into(),
             );
         }
-        // Determine the effective throttling temperature for validation
         let effective_throttling = if throttling != 0 {
             Some(throttling)
         } else {
@@ -316,10 +314,7 @@ impl Governor {
             return Err(
                 "temperature recovery must be lower than throttling, or 0 to ignore".into(),
             );
-        } else {
         }
-
-        // Only modify after all validations pass
 
         if throttling != 0 {
             self.params.temperature.throttling_temp = effective_throttling;
