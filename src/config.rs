@@ -75,6 +75,7 @@ pub struct Config {
     pub gpu: GpuConfig,
     pub dbus: DbusConfig,
     pub frequency_range: FrequencyRangeConfig,
+    pub performance_mode: PerformanceModeConfig,
 }
 
 pub struct TimingConfig {
@@ -137,6 +138,10 @@ pub struct GovernorParams {
     pub adjustment_interval: Duration,
 }
 
+pub struct PerformanceModeConfig {
+    pub cpu_performance: bool,
+}
+
 impl Config {
     pub fn new(config_text: std::io::Result<String>) -> Result<Config> {
         let config = config_text?.parse::<Table>()?;
@@ -155,6 +160,7 @@ impl Config {
             },
             dbus: parse_dbus_config(&config),
             frequency_range: parse_frequency_range_config(&config),
+            performance_mode: parse_performance_mode_config(&config),
         })
     }
 
@@ -609,6 +615,25 @@ fn parse_frequency_range_config(config: &Table) -> FrequencyRangeConfig {
     FrequencyRangeConfig { min, max }
 }
 
+fn parse_performance_mode_config(config: &Table) -> PerformanceModeConfig {
+    let performance_mode = config
+        .get("performance-mode")
+        .or_else(|| config.get("performance_mode"))
+        .and_then(|t| t.as_table());
+
+    let cpu_performance = match performance_mode.and_then(|t| t.get("cpu-performance")) {
+        None => false,
+        Some(value) => value.as_bool().unwrap_or_else(|| {
+            warn!(
+                "performance-mode.cpu-performance must be a boolean true or false, replaced with the default value of false"
+            );
+            false
+        }),
+    };
+
+    PerformanceModeConfig { cpu_performance }
+}
+
 fn nested_table<'a>(table: Option<&'a Table>, key: &str) -> Option<&'a Table> {
     table
         .and_then(|t| t.get(key))
@@ -1003,5 +1028,22 @@ mod tests {
         assert_eq!(config.gpu_usage.fix_metrics, false);
         assert_eq!(config.gpu_usage.flush_every, 7);
         assert!(matches!(config.gpu_usage.method, GpuUsageMethod::Process));
+    }
+
+    #[test]
+    fn performance_mode_cpu_performance_is_off_by_default() {
+        let config = parse_config("");
+        assert!(!config.performance_mode.cpu_performance);
+    }
+
+    #[test]
+    fn performance_mode_cpu_performance_is_parsed() {
+        let config = parse_config(
+            r#"
+            [performance-mode]
+            cpu-performance = true
+            "#,
+        );
+        assert!(config.performance_mode.cpu_performance);
     }
 }

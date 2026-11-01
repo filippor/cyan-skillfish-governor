@@ -1,5 +1,6 @@
 use crate::app_error::Result;
 use crate::config::GovernorParams;
+use crate::cpu_governor::CpuGovernorSwitch;
 use crate::gpu::GPU;
 use crate::gpu_frequency_fix::GpuFrequencyFix;
 use crate::gpu_usage_fix::GpuUsageFix;
@@ -14,6 +15,7 @@ pub struct Governor {
     gpu: GPU,
     gpu_usage_fix: Option<GpuUsageFix>,
     gpu_frequency_fix: Option<GpuFrequencyFix>,
+    cpu_governor: Option<CpuGovernorSwitch>,
     curr_freq: u32,
     target_freq: u32,
     status: i16,
@@ -32,6 +34,7 @@ impl Governor {
         gpu: GPU,
         gpu_usage_fix: Option<GpuUsageFix>,
         gpu_frequency_fix: Option<GpuFrequencyFix>,
+        cpu_governor: Option<CpuGovernorSwitch>,
     ) -> Result<Self> {
         let curr_freq = gpu.get_freq()?;
         let target_freq = *params.allowed_frequency_range.start();
@@ -44,6 +47,7 @@ impl Governor {
             gpu,
             gpu_usage_fix,
             gpu_frequency_fix,
+            cpu_governor,
             curr_freq,
             target_freq,
             status: 0,
@@ -132,7 +136,7 @@ impl Governor {
             "Performance mode {}",
             if value { "enabled" } else { "disabled" }
         );
-        self.performance_mode = value;
+        self.set_performance_mode(value);
         self.test_mode = false;
         self.requested_range = if value {
             self.params.allowed_frequency_range.clone()
@@ -162,7 +166,7 @@ impl Governor {
             "Performance mode enabled with fixed frequency request: {}",
             frequency
         );
-        self.performance_mode = true;
+        self.set_performance_mode(true);
         self.test_mode = false;
         self.requested_range = *self.startup_initial_range.start()..=frequency;
         if self.max_freq > frequency {
@@ -217,7 +221,7 @@ impl Governor {
         match (min, max) {
             (0, 0) => {
                 info!("Frequency range reset: restored initial limits");
-                self.performance_mode = false;
+                self.set_performance_mode(false);
                 self.requested_range = self.startup_initial_range.clone();
                 info!(
                     "Updated range : {}..={}",
@@ -230,7 +234,7 @@ impl Governor {
                     "Upper limit set to {} MHz, lower limit reset to initial value",
                     ma
                 );
-                self.performance_mode = false;
+                self.set_performance_mode(false);
                 self.requested_range = *self.startup_initial_range.start()..=ma;
                 info!(
                     "Updated range : {}..={}",
@@ -243,7 +247,7 @@ impl Governor {
                     "Lower limit set to {} MHz, upper limit reset to initial value",
                     mi
                 );
-                self.performance_mode = false;
+                self.set_performance_mode(false);
                 self.requested_range = mi..=*self.startup_initial_range.end();
                 info!(
                     "Updated range : {}..={}",
@@ -256,7 +260,7 @@ impl Governor {
                     && self.params.allowed_frequency_range.contains(&ma) =>
             {
                 info!("Frequency range set: min={} MHz, max={} MHz", mi, ma);
-                self.performance_mode = false;
+                self.set_performance_mode(false);
                 self.requested_range = mi..=ma;
                 info!(
                     "Updated range : {}..={}",
@@ -354,6 +358,9 @@ impl Governor {
     }
 
     pub fn shutdown(&mut self) -> Result<()> {
+        if let Some(switch) = self.cpu_governor.as_mut() {
+            switch.restore();
+        }
         if let Some(fix) = self.gpu_usage_fix.as_mut()
             && let Err(err) = fix.shutdown()
         {
@@ -372,6 +379,21 @@ impl Governor {
 
     pub fn performance_mode_enabled(&self) -> bool {
         self.performance_mode
+    }
+
+    /// Every change of performance mode goes through here, so the CPU
+    /// governor follows it whichever command made the change.
+    fn set_performance_mode(&mut self, enabled: bool) {
+        if enabled != self.performance_mode
+            && let Some(switch) = self.cpu_governor.as_mut()
+        {
+            if enabled {
+                switch.apply();
+            } else {
+                switch.restore();
+            }
+        }
+        self.performance_mode = enabled;
     }
 
     pub fn startup_initial_range(&self) -> RangeInclusive<u32> {

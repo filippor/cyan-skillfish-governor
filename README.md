@@ -208,6 +208,9 @@ Top-level keys:
 - `dbus`
   - `enabled` (bool, default: `false`): enable D-Bus performance-mode service.
 
+- `performance-mode`
+  - `cpu-performance` (bool, default: `false`): switch the CPU to the `performance` governor while performance mode is on, and back to the previous one when it turns off. Requires corrected ACPI tables, such as [bc250-acpi-fix](https://github.com/e-tho/bc250-acpi-fix).
+
 - `frequency-range` (optional)
   - `min` (optional integer, MHz): initial minimum frequency limit. Default: hardware minimum.
   - `max` (optional integer, MHz): initial maximum frequency limit. Default: hardware maximum.
