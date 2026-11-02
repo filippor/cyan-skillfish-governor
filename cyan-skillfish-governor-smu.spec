@@ -47,6 +47,7 @@ export CYAN_SKILLFISH_GOVERNOR_VERSION=%{version}
 %cargo_install
 mkdir -p %{buildroot}/%{_unitdir}
 cp %name.service %{buildroot}/%{_unitdir}/%name.service
+install -Dm644 70-cyan-skillfish-governor.rules %{buildroot}%{_udevrulesdir}/70-cyan-skillfish-governor.rules
 mkdir -p %{buildroot}%{_sysconfdir}/%name/
 cp default-config.toml %{buildroot}%{_sysconfdir}/%name/config.toml
 install -Dm755 scripts/cyan-skillfish-performance-mode %{buildroot}%{_bindir}/cyan-skillfish-performance-mode
@@ -56,6 +57,8 @@ mkdir -p %{buildroot}/usr/lib/systemd/system-preset/
 #echo "enable %name.service" > %{buildroot}/usr/lib/systemd/system-preset/50-%name.preset
 
 %post
+%udev_rules_update
+udevadm trigger --action=change --subsystem-match=drm >/dev/null 2>&1 || :
 %systemd_post %name.service
 /bin/systemctl %name.service >/dev/null 2>&1 || :
 
@@ -78,6 +81,7 @@ mkdir -p %{buildroot}/usr/lib/systemd/system-preset/
 %{_bindir}/cyan-skillfish-performance-mode
 %config(noreplace) %{_sysconfdir}/%name/config.toml
 %{_unitdir}/%name.service
+%{_udevrulesdir}/70-cyan-skillfish-governor.rules
 %{_datadir}/dbus-1/system.d/com.cyanskillfish.Governor.conf
 #/usr/lib/systemd/system-preset/50-#name.preset
 

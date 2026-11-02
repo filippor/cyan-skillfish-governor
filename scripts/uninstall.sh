@@ -15,6 +15,7 @@ INSTALL_DIR="/etc/cyan-skillfish-governor-smu"
 SERVICE_FILE="/etc/systemd/system/cyan-skillfish-governor-smu.service"
 PERFORMANCE_MODE_PATH="/usr/local/bin/cyan-skillfish-performance-mode"
 DBUS_POLICY_PATH="/etc/dbus-1/system.d/com.cyanskillfish.Governor.conf"
+UDEV_RULE_PATH="/etc/udev/rules.d/70-cyan-skillfish-governor.rules"
 
 echo -e "${YELLOW}Uninstalling Cyan Skillfish Governor...${NC}"
 
@@ -34,6 +35,12 @@ if [ -f "$SERVICE_FILE" ]; then
     echo "Removing service file..."
     rm "$SERVICE_FILE"
     systemctl daemon-reload
+fi
+
+if [ -f "$UDEV_RULE_PATH" ]; then
+    echo "Removing udev rule..."
+    rm "$UDEV_RULE_PATH"
+    udevadm control --reload-rules || true
 fi
 
 # Remove installation directory

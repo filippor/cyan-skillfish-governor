@@ -1,6 +1,11 @@
 [Unit]
 Description=Cyan Skillfish GPU Governor
 Conflicts=cyan-skillfish-governor.service cyan-skillfish-governor-tt.service oberon-governor.service
+# Start only once amdgpu has registered the GPU (70-cyan-skillfish-governor.rules). BindsTo=
+# rather than Wants=: if the GPU never appears the start fails once instead of looping on
+# Restart=on-failure, and the governor stops if the device goes away.
+BindsTo=dev-cyan_skillfish_gpu.device
+After=dev-cyan_skillfish_gpu.device
 
 [Service]
 ExecStart=/usr/bin/cyan-skillfish-governor-smu /etc/cyan-skillfish-governor-smu/config.toml

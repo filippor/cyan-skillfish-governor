@@ -23,6 +23,7 @@ CONFIG_PATH="$INSTALL_DIR/config.toml"
 SERVICE_FILE="/etc/systemd/system/cyan-skillfish-governor-smu.service"
 PERFORMANCE_MODE_PATH="/usr/local/bin/cyan-skillfish-performance-mode"
 DBUS_POLICY_PATH="/etc/dbus-1/system.d/com.cyanskillfish.Governor.conf"
+UDEV_RULE_PATH="/etc/udev/rules.d/70-cyan-skillfish-governor.rules"
 
 # Create installation directory
 echo "Creating installation directory..."
@@ -52,12 +53,19 @@ if [ -f "$CONFIG_PATH" ]; then
 fi
 cp config.toml "$CONFIG_PATH"
 
+echo "Installing udev rule..."
+cp 70-cyan-skillfish-governor.rules "$UDEV_RULE_PATH"
+udevadm control --reload-rules
+udevadm trigger --action=change --subsystem-match=drm
+udevadm settle --timeout=30 || true
+
 # Create systemd service
 echo "Creating systemd service..."
 cat > "$SERVICE_FILE" << EOF
 [Unit]
 Description=Cyan Skillfish GPU Governor
-After=multi-user.target
+BindsTo=dev-cyan_skillfish_gpu.device
+After=multi-user.target dev-cyan_skillfish_gpu.device
 
 [Service]
 Type=simple

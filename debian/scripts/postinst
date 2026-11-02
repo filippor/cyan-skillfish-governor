@@ -1,4 +1,11 @@
 #!/bin/sh
 set -e
+# Apply the udev rule to a GPU that is already present, so the device unit the service
+# is bound to exists before the generated systemd section below starts it.
+if [ "$1" = "configure" ] && [ -d /run/udev ] && command -v udevadm >/dev/null 2>&1; then
+    udevadm control --reload-rules || true
+    udevadm trigger --action=change --subsystem-match=drm || true
+    udevadm settle --timeout=30 || true
+fi
 #DEBHELPER#
 exit 0
