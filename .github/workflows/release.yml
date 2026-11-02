@@ -65,6 +65,7 @@ jobs:
         # Copy files
         cp target/release/cyan-skillfish-governor-smu "${PKG_NAME}/"
         cp default-config.toml "${PKG_NAME}/config.toml"
+        cp 70-cyan-skillfish-governor.rules "${PKG_NAME}/"
         cp README.md "${PKG_NAME}/" || true
         cp LICENSE "${PKG_NAME}/" || true
 

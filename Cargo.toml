@@ -27,7 +27,8 @@ depends = "libdrm2, libdrm-amdgpu1"
 assets = [
     ["target/release/cyan-skillfish-governor-smu", "usr/bin/", "755"],
     { source = "com.cyanskillfish.Governor.conf", dest = "etc/dbus-1/system.d/com.cyanskillfish.Governor.conf"},
-    { source = "default-config.toml", dest = "etc/cyan-skillfish-governor-smu/config.toml", mode = "644"}
+    { source = "default-config.toml", dest = "etc/cyan-skillfish-governor-smu/config.toml", mode = "644"},
+    { source = "70-cyan-skillfish-governor.rules", dest = "usr/lib/udev/rules.d/70-cyan-skillfish-governor.rules", mode = "644"}
 ]
 systemd-units = [
     { unit-name = "cyan-skillfish-governor-smu", unit-scripts = ".", enable = true },

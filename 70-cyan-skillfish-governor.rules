@@ -1,0 +1,4 @@
+# Give the Cyan Skillfish GPU's render node (PCI 1002:13fe) a systemd device unit,
+# dev-cyan_skillfish_gpu.device, once amdgpu has registered it. The governor's unit is
+# ordered after it, so the governor never starts before amdgpu has finished probing.
+SUBSYSTEM=="drm", KERNEL=="renderD*", ATTRS{vendor}=="0x1002", ATTRS{device}=="0x13fe", TAG+="systemd", ENV{SYSTEMD_ALIAS}+="/dev/cyan_skillfish_gpu"
