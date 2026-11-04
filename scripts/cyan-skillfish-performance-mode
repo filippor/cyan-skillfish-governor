@@ -312,6 +312,15 @@ cleanup() {
     call_set_enabled false || true
 }
 
+# Runs the wrapped command as a child, so the shell is still there to turn
+# performance mode off when it exits or the wrapper is interrupted.
+run_wrapped() {
+    trap cleanup EXIT
+    trap 'exit 130' INT
+    trap 'exit 143' TERM
+    "$@"
+}
+
 print_service_hint_if_not_running() {
     if ! has_service_owner; then
         echo "The governor service does not appear to be running." >&2
@@ -363,8 +372,8 @@ case "$1" in
                     exit 1
                 fi
 
-                trap cleanup EXIT INT TERM
-                exec "$@"
+                run_wrapped "$@"
+                exit $?
             fi
 
             exit 0
@@ -400,8 +409,8 @@ case "$1" in
                     exit 1
                 fi
 
-                trap cleanup EXIT INT TERM
-                exec "$@"
+                run_wrapped "$@"
+                exit $?
             fi
 
             exit 0
@@ -438,8 +447,8 @@ case "$1" in
                     exit 1
                 fi
 
-                trap cleanup EXIT INT TERM
-                exec "$@"
+                run_wrapped "$@"
+                exit $?
             fi
 
             exit 0
@@ -475,8 +484,8 @@ case "$1" in
                     exit 1
                 fi
 
-                trap cleanup EXIT INT TERM
-                exec "$@"
+                run_wrapped "$@"
+                exit $?
             fi
 
             exit 0
@@ -511,10 +520,20 @@ case "$1" in
         ;;
     *)
         # Treat as command wrapper mode: enable, run command, disable on exit
+        if [ "${1:-}" = "--" ]; then
+            shift
+        fi
+
+        if [ "$#" -eq 0 ]; then
+            echo "Error: no command provided after --" >&2
+            usage
+            exit 1
+        fi
+
         call_set_enabled true || {
             echo "Warning: failed to enable performance mode." >&2
         }
-        trap cleanup EXIT INT TERM
-        exec "$@"
+        run_wrapped "$@"
+        exit $?
         ;;
 esac
