@@ -1,6 +1,7 @@
 mod app_error;
 mod bind_overlay;
 mod config;
+mod cpu_governor;
 mod dbus;
 mod governor;
 mod gpu;
@@ -10,6 +11,7 @@ use app_error::{AppError, Result};
 use clap::Parser;
 use clap_verbosity_flag::{InfoLevel, Verbosity};
 use config::{Config, GovernorParams};
+use cpu_governor::CpuGovernorSwitch;
 use governor::Governor;
 use gpu::GPU;
 use gpu_frequency_fix::GpuFrequencyFix;
@@ -68,11 +70,17 @@ fn main() -> Result<()> {
         None
     };
 
+    let cpu_governor = config.performance_mode.cpu_performance.then(|| {
+        info!("CPU performance governor enabled for performance mode");
+        CpuGovernorSwitch::default()
+    });
+
     let governor = Arc::new(Mutex::new(Governor::new(
         params,
         gpu,
         gpu_usage_fix,
         gpu_frequency_fix,
+        cpu_governor,
     )?));
 
     if config.dbus.enabled {

@@ -16,6 +16,11 @@ set-method = "smu"  # "smu" or "kernel"
 [dbus]
 enabled = true
 
+# Optional: switch the CPU to the performance governor while performance
+# mode is on, and back when it turns off. Requires corrected ACPI tables
+# for CPU frequency scaling.
+# [performance-mode]
+# cpu-performance = true
 
 # Optional: set initial frequency range limits
 # Both min and max can be omitted or set to 0 for no limit
@@ -114,6 +119,3 @@ voltage = 960
 # [[safe-points]]
 # frequency = 2400
 # voltage = 1150
-
-
-
