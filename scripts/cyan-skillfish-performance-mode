@@ -520,6 +520,16 @@ case "$1" in
         ;;
     *)
         # Treat as command wrapper mode: enable, run command, disable on exit
+        if [ "${1:-}" = "--" ]; then
+            shift
+        fi
+
+        if [ "$#" -eq 0 ]; then
+            echo "Error: no command provided after --" >&2
+            usage
+            exit 1
+        fi
+
         call_set_enabled true || {
             echo "Warning: failed to enable performance mode." >&2
         }
