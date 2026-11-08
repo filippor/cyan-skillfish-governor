@@ -33,7 +33,12 @@ impl Governor {
         gpu_usage_fix: Option<GpuUsageFix>,
         gpu_frequency_fix: Option<GpuFrequencyFix>,
     ) -> Result<Self> {
-        let curr_freq = gpu.get_freq()?;
+        // Read once so a missing or unreadable clock file still fails at start, but don't trust it as the
+        // applied state: the firmware boot clock can already equal the target (e.g. a range fixed at 1500 MHz),
+        // and then no write would ever send the safe-point voltage. Starting from 0 makes the first iteration
+        // write the target clock and its voltage, as test mode does when it ends.
+        gpu.get_freq()?;
+        let curr_freq = 0;
         let target_freq = *params.allowed_frequency_range.start();
         let max_freq = *params.allowed_frequency_range.end();
         let requested_range = params.initial_frequency_range.clone();
@@ -495,6 +500,20 @@ mod tests {
             down_events: 10,
             adjustment_interval: std::time::Duration::from_micros(20_000),
         }
+    }
+
+    #[test]
+    fn first_iteration_writes_when_fixed_range_equals_boot_clock() {
+        let p = sample_params();
+        // Fixed range 1000..=1000, governor just started (curr_freq 0): the target must be applied.
+        let (target, _, should_apply) =
+            compute_frequency_decision(0, 300, 0, 1000, 1000, false, 0.5, 0, &p);
+        assert_eq!(target, 1000);
+        assert!(should_apply);
+        // Had curr_freq been read from the clock file (already 1000), nothing would be written.
+        let (_, _, should_apply) =
+            compute_frequency_decision(1000, 300, 0, 1000, 1000, false, 0.5, 0, &p);
+        assert!(!should_apply);
     }
 
     #[test]
